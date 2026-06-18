@@ -35,6 +35,13 @@ const TIPOS_DOC = [
   { key: "demonstrativo", label: "Demonstrativo" },
 ];
 
+const PERIODOS = [
+  { meses: 1, label: "1 mês", desc: "Prestação do mês" },
+  { meses: 3, label: "3 meses", desc: "Trimestre" },
+  { meses: 6, label: "6 meses", desc: "Semestre" },
+  { meses: 12, label: "12 meses", desc: "Ano" },
+];
+
 // --- chamada à API Anthropic (idêntica à estrutura do app da Holder) -------
 async function chamarClaude(prompt, arquivosBase64 = []) {
   const response = await fetch("/api/claude", {
@@ -100,6 +107,8 @@ export default function AnalistaFinanceiroAttento() {
   const [condominio, setCondominio] = useState("");
   const [mesPrestacao, setMesPrestacao] = useState(mesAtualFormatado());
   const competencia = competenciaDeReferencia(mesPrestacao);
+  const [periodoMeses, setPeriodoMeses] = useState(1);
+  const [analisePeriodo, setAnalisePeriodo] = useState(null); // { meses: [{mes, categorias[], entrou, saiu}], ... }
   const [carregando, setCarregando] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
   const [analise, setAnalise] = useState(null); // { erros: [], contas: [] }
@@ -187,6 +196,59 @@ Responda APENAS com JSON, sem markdown, neste formato exato:
       setCarregando(false);
       setStatusMsg("");
     }
+  };
+
+  // --- análise de PERÍODO (3/6/12 meses): evolução temporal ------------------
+  const rodarAnalisePeriodo = async () => {
+    setCarregando(true);
+    setErroApi("");
+    setAnalisePeriodo(null);
+    setStatusMsg(`Analisando a evolução dos últimos ${periodoMeses} meses...`);
+    try {
+      const regrasTxt = regrasContexto.length
+        ? `\nREGRAS QUE O ANALISTA DA ATTENTO ENSINOU (prioridade máxima):\n${regrasContexto.map((r, i) => `${i + 1}. ${r}`).join("\n")}\n`
+        : "";
+      const prompt = `Você é o analista contábil da administradora Attento.
+Os documentos anexados cobrem ${periodoMeses} meses de prestação de contas do condomínio "${condominio || "—"}" (regime de caixa — valores pela data de pagamento). A prestação mais recente é "${mesPrestacao}".
+${regrasTxt}
+Tarefa: monte a EVOLUÇÃO do período para apresentar em assembleia, em linguagem de leigo. Para CADA mês identificado nos documentos:
+- agrupe as despesas em categorias do dia a dia (Água, Energia, Limpeza, Manutenção, Administração, Salários/Pessoal, Outros);
+- some o que entrou e o que saiu no mês.
+Depois calcule médias e totais do período inteiro, e aponte tendências (categorias que mais subiram/caíram).
+
+Responda APENAS com JSON, valores numéricos sem "R$":
+{
+  "meses": [
+    { "mes": "Fevereiro/2026", "entrou": 0, "saiu": 0, "sobrou": 0, "categorias": [ { "nome": "Água", "valor": 0 } ] }
+  ],
+  "categorias_periodo": ["Água", "Energia", "Limpeza"],
+  "media_entrou": 0,
+  "media_saiu": 0,
+  "total_entrou": 0,
+  "total_saiu": 0,
+  "saldo_periodo": 0,
+  "tendencias": ["frase simples sobre o que mais subiu", "frase sobre o saldo ao longo do tempo"]
+}
+Ordene "meses" do mais antigo para o mais recente. "categorias_periodo" deve listar todas as categorias que aparecem, para servir de base ao gráfico de evolução.`;
+      const resp = await chamarClaude(prompt, arquivos);
+      const json = parseJSON(resp);
+      if (!json || !Array.isArray(json.meses)) {
+        throw new Error("Não consegui montar a análise de período. Início da resposta: " + (resp ? resp.slice(0, 200) : "(vazia)"));
+      }
+      setAnalisePeriodo(json);
+      setEtapa("apresentacao");
+    } catch (err) {
+      setErroApi(err.message);
+    } finally {
+      setCarregando(false);
+      setStatusMsg("");
+    }
+  };
+
+  // roteia para análise mensal (com correção de erros) ou de período
+  const iniciarAnalise = () => {
+    if (periodoMeses > 1) rodarAnalisePeriodo();
+    else rodarAnalise();
   };
 
   // --- chat de refinamento: usuário ensina regras e o agente reavalia ---------
@@ -322,6 +384,7 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
     setArquivos([]);
     setAnalise(null);
     setApresentacao(null);
+    setAnalisePeriodo(null);
     setErrosCorrigidos({});
     setErroApi("");
   };
@@ -395,6 +458,28 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
             </div>
           </div>
 
+          {/* seletor de período de análise */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 13, fontWeight: 600, color: VERDE[700] }}>Período da análise</label>
+            <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+              {PERIODOS.map((p) => {
+                const ativo = periodoMeses === p.meses;
+                return (
+                  <button key={p.meses} onClick={() => setPeriodoMeses(p.meses)}
+                    style={{ flex: 1, background: ativo ? VERDE[500] : "#fff", border: `1px solid ${ativo ? VERDE[600] : "#D6DAD6"}`, borderRadius: 10, padding: "10px 8px", cursor: "pointer", textAlign: "center" }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: ativo ? "#fff" : VERDE[700] }}>{p.label}</div>
+                    <div style={{ fontSize: 11, color: ativo ? VERDE[100] : "#8A938C" }}>{p.desc}</div>
+                  </button>
+                );
+              })}
+            </div>
+            {periodoMeses > 1 && (
+              <div style={{ fontSize: 12, color: VERDE[600], marginTop: 6, background: VERDE[50], border: `1px solid ${VERDE[100]}`, borderRadius: 8, padding: "6px 10px" }}>
+                📈 Análise de evolução: envie os documentos dos {periodoMeses} meses (a Winker pode juntar num arquivo só). O agente vai mostrar a tendência por categoria, mês a mês, com médias e totais — sem etapa de correção de erros.
+              </div>
+            )}
+          </div>
+
           <div
             onClick={() => inputRef.current?.click()}
             onDragOver={(e) => e.preventDefault()}
@@ -422,8 +507,8 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
             </div>
           )}
 
-          <button disabled={arquivos.length === 0 || carregando} onClick={rodarAnalise} style={{ ...btnPrimary, opacity: arquivos.length === 0 ? 0.5 : 1 }}>
-            🔍 Analisar documentos
+          <button disabled={arquivos.length === 0 || carregando} onClick={iniciarAnalise} style={{ ...btnPrimary, opacity: arquivos.length === 0 ? 0.5 : 1 }}>
+            {periodoMeses > 1 ? `📈 Analisar evolução (${periodoMeses} meses)` : "🔍 Analisar documentos"}
           </button>
         </div>
       )}
@@ -555,6 +640,98 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
           </div>
 
           <button disabled={carregando} onClick={gerarApresentacao} style={btnPrimary}>📊 Gerar apresentação da assembleia</button>
+        </div>
+      )}
+
+      {/* ============ ETAPA 4 (PERÍODO): EVOLUÇÃO 3/6/12 MESES ============ */}
+      {etapa === "apresentacao" && analisePeriodo && (
+        <div id="apresentacao-print">
+          <div style={{ textAlign: "center", marginBottom: 20 }}>
+            <div style={{ fontSize: 20, fontWeight: 700, color: VERDE[800] }}>Evolução do Período</div>
+            <div style={{ fontSize: 14, color: "#6B756D" }}>{condominio || "Condomínio"} · últimos {periodoMeses} meses (até {mesPrestacao})</div>
+          </div>
+
+          {/* médias e totais do período */}
+          <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+            {[
+              { l: "Entrou (total)", v: analisePeriodo.total_entrou, c: VERDE[600], icon: "⬆️" },
+              { l: "Saiu (total)", v: analisePeriodo.total_saiu, c: "#C0392B", icon: "⬇️" },
+              { l: "Saldo do período", v: analisePeriodo.saldo_periodo, c: (analisePeriodo.saldo_periodo ?? 0) >= 0 ? VERDE[700] : "#C0392B", icon: "💰" },
+              { l: "Média/mês (saiu)", v: analisePeriodo.media_saiu, c: "#6B756D", icon: "📊" },
+            ].map((m, i) => (
+              <div key={i} style={{ flex: "1 1 150px", background: VERDE[50], border: `1px solid ${VERDE[200]}`, borderRadius: 12, padding: "14px 12px", textAlign: "center" }}>
+                <div style={{ fontSize: 12, color: "#6B756D" }}>{m.icon} {m.l}</div>
+                <div style={{ fontSize: 19, fontWeight: 700, color: m.c, marginTop: 4 }}>{brl(m.v)}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* tendências em frases simples */}
+          {Array.isArray(analisePeriodo.tendencias) && analisePeriodo.tendencias.length > 0 && (
+            <div style={{ background: "#fff", border: "1px solid #E2E6E2", borderRadius: 14, padding: "16px 20px", marginBottom: 16 }}>
+              <div style={{ fontSize: 15, fontWeight: 600, color: VERDE[800], marginBottom: 8 }}>📌 Destaques</div>
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14.5, color: "#3F473F", lineHeight: 1.7 }}>
+                {analisePeriodo.tendencias.map((t, j) => <li key={j}>{t}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {/* gráfico de evolução do total que saiu por mês (linha/barras) */}
+          {Array.isArray(analisePeriodo.meses) && analisePeriodo.meses.length > 0 && (() => {
+            const maxSaiu = Math.max(...analisePeriodo.meses.map((m) => Number(m.saiu) || 0), 1);
+            return (
+              <div style={{ background: "#fff", border: "1px solid #E2E6E2", borderRadius: 14, padding: "20px 24px", marginBottom: 16 }}>
+                <div style={{ fontSize: 17, fontWeight: 600, color: VERDE[800], marginBottom: 16 }}>Quanto saiu por mês</div>
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 170, paddingTop: 10 }}>
+                  {analisePeriodo.meses.map((m, i) => {
+                    const altura = Math.max(((Number(m.saiu) || 0) / maxSaiu) * 140, 4);
+                    return (
+                      <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
+                        <div style={{ fontSize: 10.5, color: "#6B756D", marginBottom: 4, whiteSpace: "nowrap" }}>{brl(m.saiu)}</div>
+                        <div style={{ width: "100%", maxWidth: 48, height: altura, background: VERDE[500], borderRadius: "6px 6px 0 0" }} />
+                        <div style={{ fontSize: 10.5, color: "#6B756D", marginTop: 6, textAlign: "center", lineHeight: 1.2 }}>{m.mes}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* tabela mês a mês por categoria */}
+          {Array.isArray(analisePeriodo.meses) && analisePeriodo.meses.length > 0 && Array.isArray(analisePeriodo.categorias_periodo) && (
+            <div style={{ background: "#fff", border: "1px solid #E2E6E2", borderRadius: 14, padding: "20px 24px", marginBottom: 16, overflowX: "auto" }}>
+              <div style={{ fontSize: 17, fontWeight: 600, color: VERDE[800], marginBottom: 14 }}>Comparativo mês a mês</div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: VERDE[100] }}>
+                    <th style={{ ...th, position: "sticky", left: 0 }}>Categoria</th>
+                    {analisePeriodo.meses.map((m, i) => <th key={i} style={{ ...th, textAlign: "right" }}>{m.mes}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {analisePeriodo.categorias_periodo.map((cat, r) => (
+                    <tr key={r} style={{ borderTop: "1px solid #EEF1EE" }}>
+                      <td style={{ ...td, fontWeight: 600 }}>{cat}</td>
+                      {analisePeriodo.meses.map((m, c) => {
+                        const item = (m.categorias || []).find((x) => x.nome === cat);
+                        return <td key={c} style={{ ...td, textAlign: "right" }}>{item ? brl(item.valor) : "—"}</td>;
+                      })}
+                    </tr>
+                  ))}
+                  <tr style={{ borderTop: `2px solid ${VERDE[200]}`, background: VERDE[50] }}>
+                    <td style={{ ...td, fontWeight: 700 }}>Total saiu</td>
+                    {analisePeriodo.meses.map((m, c) => <td key={c} style={{ ...td, textAlign: "right", fontWeight: 700, color: "#C0392B" }}>{brl(m.saiu)}</td>)}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="no-print" style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <button onClick={() => window.print()} style={btnPrimary}>📄 Exportar PDF</button>
+          </div>
+          <style>{`@media print { .no-print { display: none !important; } }`}</style>
         </div>
       )}
 
