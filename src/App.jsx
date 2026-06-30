@@ -119,6 +119,12 @@ export default function AnalistaFinanceiroAttento() {
   const [regrasContexto, setRegrasContexto] = useState([]);
   const [chatMsgs, setChatMsgs] = useState([]); // { autor: 'voce'|'agente', texto }
   const [chatInput, setChatInput] = useState("");
+  // Fundo de reserva
+  const [percentualFundo, setPercentualFundo] = useState("10");
+  const [fundoReserva, setFundoReserva] = useState(null); // resultado da conferência
+  // ISSQN
+  const [issqnMarcado, setIssqnMarcado] = useState("sim"); // o que o usuário espera: "sim" | "nao"
+  const [issqnResultado, setIssqnResultado] = useState(null); // { encontrado: bool, valor, detalhe }
   const inputRef = useRef(null);
 
   const indiceEtapa = ETAPAS.findIndex((e) => e.id === etapa);
@@ -250,6 +256,93 @@ Ordene "meses" do mais antigo para o mais recente. "categorias_periodo" deve lis
     if (periodoMeses > 1) rodarAnalisePeriodo();
     else rodarAnalise();
   };
+
+  // --- conferência do FUNDO DE RESERVA --------------------------------------
+  const conferirFundoReserva = async () => {
+    setCarregando(true);
+    setErroApi("");
+    setFundoReserva(null);
+    setStatusMsg("Conferindo o fundo de reserva do mês...");
+    try {
+      const pct = parseFloat(String(percentualFundo).replace(",", ".")) || 0;
+      const prompt = `Você é o analista contábil da administradora Attento (regime de caixa).
+Documentos anexados: prestação de contas do condomínio "${condominio || "—"}", mês "${mesPrestacao}".
+
+Tarefa: CONFERIR O FUNDO DE RESERVA do mês.
+Regra: o fundo de reserva deve corresponder a ${pct}% sobre a ARRECADAÇÃO do mês (total que entrou de taxas/cotas condominiais).
+Há uma CONTA CONTÁBIL PRÓPRIA do fundo de reserva nos documentos.
+
+Passos:
+1. Identifique a arrecadação do mês (total arrecadado dos condôminos).
+2. Calcule o valor ESPERADO do fundo = arrecadação × ${pct}%.
+3. Encontre o valor EFETIVAMENTE lançado na conta contábil do fundo de reserva no mês.
+4. Compare: foi aplicado? O valor bate com o esperado?
+
+Responda APENAS com JSON, valores numéricos sem "R$":
+{
+  "aplicado": true,
+  "arrecadacao": 0,
+  "percentual_usado": ${pct},
+  "valor_esperado": 0,
+  "valor_lancado": 0,
+  "diferenca": 0,
+  "conta_fundo": "nome/código da conta contábil do fundo encontrada",
+  "status": "ok | divergente | nao_aplicado",
+  "observacao": "explicação curta em linguagem simples do que foi encontrado"
+}
+"diferenca" = valor_lancado - valor_esperado. Se não encontrar lançamento no fundo, "aplicado": false e "status": "nao_aplicado".`;
+      const resp = await chamarClaude(prompt, arquivos);
+      const json = parseJSON(resp);
+      if (!json) throw new Error("Não consegui interpretar a conferência do fundo. Início da resposta: " + (resp ? resp.slice(0, 200) : "(vazia)"));
+      setFundoReserva(json);
+    } catch (err) {
+      setErroApi(err.message);
+    } finally {
+      setCarregando(false);
+      setStatusMsg("");
+    }
+  };
+
+  // --- conferência do ISSQN -------------------------------------------------
+  const conferirISSQN = async () => {
+    setCarregando(true);
+    setErroApi("");
+    setIssqnResultado(null);
+    setStatusMsg("Procurando ISSQN no relatório...");
+    try {
+      const prompt = `Você é o analista contábil da administradora Attento.
+Documentos anexados: prestação de contas do condomínio "${condominio || "—"}", mês "${mesPrestacao}".
+
+Tarefa: verificar se há ISSQN (Imposto Sobre Serviços de Qualquer Natureza) no relatório.
+// ⚠️ AJUSTAR quando o Felipe mandar o relatório de exemplo: descrever exatamente
+// como o ISSQN aparece nos documentos da Attento (linha de retenção sobre serviços,
+// conta contábil própria, campo destacado, etc.). Por enquanto procure qualquer
+// menção/lançamento de "ISSQN" ou "ISS" no relatório.
+
+Responda APENAS com JSON, valores numéricos sem "R$":
+{
+  "encontrado": true,
+  "valor": 0,
+  "onde": "onde no relatório o ISSQN aparece (conta/linha)",
+  "detalhe": "explicação curta em linguagem simples"
+}
+Se não houver nenhuma menção a ISSQN/ISS, "encontrado": false e "valor": 0.`;
+      const resp = await chamarClaude(prompt, arquivos);
+      const json = parseJSON(resp);
+      if (!json) throw new Error("Não consegui interpretar a conferência do ISSQN. Início da resposta: " + (resp ? resp.slice(0, 200) : "(vazia)"));
+      setIssqnResultado(json);
+    } catch (err) {
+      setErroApi(err.message);
+    } finally {
+      setCarregando(false);
+      setStatusMsg("");
+    }
+  };
+
+  // divergência entre o que o usuário marcou e o que foi encontrado
+  const issqnDivergente = issqnResultado &&
+    ((issqnMarcado === "nao" && issqnResultado.encontrado === true) ||
+     (issqnMarcado === "sim" && issqnResultado.encontrado === false));
 
   // --- chat de refinamento: usuário ensina regras e o agente reavalia ---------
   const enviarChat = async () => {
@@ -385,6 +478,8 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
     setAnalise(null);
     setApresentacao(null);
     setAnalisePeriodo(null);
+    setFundoReserva(null);
+    setIssqnResultado(null);
     setErrosCorrigidos({});
     setErroApi("");
   };
@@ -398,7 +493,9 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
       {/* HEADER */}
       <div style={{ background: VERDE[800], borderRadius: 16, padding: "20px 28px", marginBottom: 20, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div style={{ width: 44, height: 44, borderRadius: 12, background: VERDE[500], display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>📈</div>
+          <div style={{ width: 48, height: 48, borderRadius: 12, background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", padding: 4 }}>
+            <img src="/logo-attento.png" alt="Attento" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+          </div>
           <div>
             <div style={{ color: "#fff", fontSize: 19, fontWeight: 600, lineHeight: 1.1 }}>Analista Financeiro Attento</div>
             <div style={{ color: VERDE[200], fontSize: 13 }}>Administradora de Condomínios · Análise contábil + Assembleia</div>
@@ -552,6 +649,104 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
             )}
           </div>
 
+          {/* ===== CONFERÊNCIA DO FUNDO DE RESERVA ===== */}
+          <div style={{ marginTop: 28, background: "#fff", border: "1px solid #E2E6E2", borderRadius: 14, overflow: "hidden" }}>
+            <div style={{ background: VERDE[100], padding: "12px 16px", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 16 }}>🏦</span>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: VERDE[800] }}>Fundo de Reserva</div>
+                <div style={{ fontSize: 12, color: VERDE[700] }}>Confere se foi aplicado no mês e se o valor está correto.</div>
+              </div>
+            </div>
+
+            <div style={{ padding: 16 }}>
+              <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 14, flexWrap: "wrap" }}>
+                <div style={{ flex: "0 0 160px" }}>
+                  <label style={{ fontSize: 13, fontWeight: 600, color: VERDE[700] }}>% sobre arrecadação</label>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                    <input value={percentualFundo} onChange={(e) => setPercentualFundo(e.target.value)} inputMode="decimal" style={{ ...inp, marginTop: 0 }} />
+                    <span style={{ fontSize: 16, fontWeight: 600, color: VERDE[700] }}>%</span>
+                  </div>
+                </div>
+                <button disabled={carregando} onClick={conferirFundoReserva} style={{ ...btnPrimary, padding: "10px 18px" }}>
+                  🏦 Conferir fundo
+                </button>
+              </div>
+
+              {fundoReserva && (() => {
+                const cor = fundoReserva.status === "ok" ? VERDE[600] : fundoReserva.status === "nao_aplicado" ? "#C0392B" : "#C8861A";
+                const bg = fundoReserva.status === "ok" ? VERDE[50] : fundoReserva.status === "nao_aplicado" ? "#FDECEC" : "#FBF3E2";
+                const titulo = fundoReserva.status === "ok" ? "✅ Fundo aplicado corretamente" : fundoReserva.status === "nao_aplicado" ? "❌ Fundo NÃO foi aplicado no mês" : "⚠️ Fundo aplicado, mas com divergência de valor";
+                return (
+                  <div style={{ background: bg, border: `1px solid ${cor}`, borderRadius: 10, padding: 16 }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: cor, marginBottom: 10 }}>{titulo}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 16px", fontSize: 13.5 }}>
+                      <div>Arrecadação do mês:</div><div style={{ textAlign: "right", fontWeight: 600 }}>{brl(fundoReserva.arrecadacao)}</div>
+                      <div>Esperado ({fundoReserva.percentual_usado}%):</div><div style={{ textAlign: "right", fontWeight: 600 }}>{brl(fundoReserva.valor_esperado)}</div>
+                      <div>Lançado no fundo:</div><div style={{ textAlign: "right", fontWeight: 600 }}>{brl(fundoReserva.valor_lancado)}</div>
+                      <div style={{ borderTop: `1px solid ${cor}`, paddingTop: 6 }}>Diferença:</div>
+                      <div style={{ textAlign: "right", fontWeight: 700, color: cor, borderTop: `1px solid ${cor}`, paddingTop: 6 }}>{brl(fundoReserva.diferenca)}</div>
+                    </div>
+                    {fundoReserva.conta_fundo && <div style={{ fontSize: 12, color: "#6B756D", marginTop: 10 }}>Conta: {fundoReserva.conta_fundo}</div>}
+                    {fundoReserva.observacao && <div style={{ fontSize: 13, color: "#3F473F", marginTop: 8 }}>{fundoReserva.observacao}</div>}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+
+          {/* ===== CONFERÊNCIA DO ISSQN ===== */}
+          <div style={{ marginTop: 28, background: "#fff", border: "1px solid #E2E6E2", borderRadius: 14, overflow: "hidden" }}>
+            <div style={{ background: VERDE[100], padding: "12px 16px", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 16 }}>🧾</span>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: VERDE[800] }}>ISSQN</div>
+                <div style={{ fontSize: 12, color: VERDE[700] }}>Marque se deveria ter ISSQN. O agente confere no relatório e avisa se divergir.</div>
+              </div>
+            </div>
+
+            <div style={{ padding: 16 }}>
+              <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 14, flexWrap: "wrap" }}>
+                <div>
+                  <label style={{ fontSize: 13, fontWeight: 600, color: VERDE[700] }}>Tem ISSQN?</label>
+                  <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                    {["sim", "nao"].map((op) => (
+                      <button key={op} onClick={() => setIssqnMarcado(op)}
+                        style={{ padding: "9px 22px", borderRadius: 8, border: `1px solid ${issqnMarcado === op ? VERDE[600] : "#D6DAD6"}`, background: issqnMarcado === op ? VERDE[500] : "#fff", color: issqnMarcado === op ? "#fff" : VERDE[700], fontWeight: 600, fontSize: 14, cursor: "pointer", textTransform: "capitalize" }}>
+                        {op === "nao" ? "Não" : "Sim"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button disabled={carregando} onClick={conferirISSQN} style={{ ...btnPrimary, padding: "10px 18px" }}>
+                  🧾 Conferir ISSQN
+                </button>
+              </div>
+
+              {/* notificação de divergência */}
+              {issqnDivergente && (
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 10, background: "#FBF3E2", border: "1px solid #C8861A", borderLeft: "5px solid #C8861A", borderRadius: 8, padding: "12px 14px", marginBottom: 12 }}>
+                  <span style={{ fontSize: 18 }}>🔔</span>
+                  <div style={{ fontSize: 13.5, color: "#7A5A12" }}>
+                    {issqnMarcado === "nao"
+                      ? `Encontrei ISSQN no relatório (${brl(issqnResultado.valor)}), mas você assinalou que NÃO tem. Confira.`
+                      : `Você assinalou que TEM ISSQN, mas não encontrei no relatório. Confira.`}
+                  </div>
+                </div>
+              )}
+
+              {issqnResultado && (
+                <div style={{ background: VERDE[50], border: `1px solid ${VERDE[200]}`, borderRadius: 10, padding: 14, fontSize: 13.5 }}>
+                  <div style={{ fontWeight: 600, color: VERDE[700], marginBottom: 6 }}>
+                    {issqnResultado.encontrado ? `✅ ISSQN encontrado no relatório` : "➖ ISSQN não encontrado no relatório"}
+                  </div>
+                  {issqnResultado.encontrado && <div>Valor: <strong>{brl(issqnResultado.valor)}</strong>{issqnResultado.onde ? ` · ${issqnResultado.onde}` : ""}</div>}
+                  {issqnResultado.detalhe && <div style={{ color: "#3F473F", marginTop: 6 }}>{issqnResultado.detalhe}</div>}
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* CHAT DE REFINAMENTO */}
           <div style={{ marginTop: 28, background: "#fff", border: "1px solid #E2E6E2", borderRadius: 14, overflow: "hidden" }}>
             <div style={{ background: VERDE[100], padding: "12px 16px", display: "flex", alignItems: "center", gap: 8 }}>
@@ -647,6 +842,7 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
       {etapa === "apresentacao" && analisePeriodo && (
         <div id="apresentacao-print">
           <div style={{ textAlign: "center", marginBottom: 20 }}>
+            <img src="/logo-attento.png" alt="Attento" style={{ height: 48, marginBottom: 10 }} />
             <div style={{ fontSize: 20, fontWeight: 700, color: VERDE[800] }}>Evolução do Período</div>
             <div style={{ fontSize: 14, color: "#6B756D" }}>{condominio || "Condomínio"} · últimos {periodoMeses} meses (até {mesPrestacao})</div>
           </div>
@@ -740,6 +936,7 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
         <div id="apresentacao-print">
           {/* cabeçalho da prestação */}
           <div style={{ textAlign: "center", marginBottom: 20 }}>
+            <img src="/logo-attento.png" alt="Attento" style={{ height: 48, marginBottom: 10 }} />
             <div style={{ fontSize: 20, fontWeight: 700, color: VERDE[800] }}>Prestação de Contas</div>
             <div style={{ fontSize: 14, color: "#6B756D" }}>{condominio || "Condomínio"} · {mesPrestacao}</div>
           </div>
