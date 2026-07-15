@@ -125,6 +125,8 @@ export default function AnalistaFinanceiroAttento() {
   // ISSQN
   const [issqnMarcado, setIssqnMarcado] = useState("sim"); // o que o usuário espera: "sim" | "nao"
   const [issqnResultado, setIssqnResultado] = useState(null); // { encontrado: bool, valor, detalhe }
+  // Auditoria (Bloco 1)
+  const [auditoria, setAuditoria] = useState(null);
   const inputRef = useRef(null);
 
   const indiceEtapa = ETAPAS.findIndex((e) => e.id === etapa);
@@ -255,6 +257,72 @@ Ordene "meses" do mais antigo para o mais recente. "categorias_periodo" deve lis
   const iniciarAnalise = () => {
     if (periodoMeses > 1) rodarAnalisePeriodo();
     else rodarAnalise();
+  };
+
+  // --- AUDITORIA (Bloco 1): parecer técnico da prestação de contas -----------
+  const rodarAuditoria = async () => {
+    setCarregando(true);
+    setErroApi("");
+    setAuditoria(null);
+    setStatusMsg("Auditando a prestação de contas... isso pode levar um pouco.");
+    try {
+      const regrasTxt = regrasContexto.length
+        ? `\nREGRAS QUE O ANALISTA DA ATTENTO ENSINOU (prioridade máxima):\n${regrasContexto.map((r, i) => `${i + 1}. ${r}`).join("\n")}\n`
+        : "";
+      const prompt = `Você é auditor condominial e contador especializado em condomínios sob REGIME DE CAIXA (receitas/despesas pela data de pagamento; nunca competência).
+Audite a prestação de contas do condomínio "${condominio || "—"}" com base EXCLUSIVAMENTE nos documentos anexados. Não invente valores. Quando faltar um documento para uma verificação, marque como "não verificável" e diga qual documento falta.
+${regrasTxt}
+Os documentos podem vir como "Demonstrativo Contábil de Centro de Custos", organizados em centros como 01.01 Ordinária, 01.02 Fundo de Reserva, 01.12 Taxa Extra, 01.13 Conta Capital, 01.14 Poupança. As receitas começam com 01. e despesas com 02. Pode haver várias colunas de meses com Total e Média.
+
+Faça estas verificações e responda APENAS com JSON (valores numéricos sem "R$", use ponto decimal):
+{
+  "periodo": "ex.: Março a Maio/2026",
+  "meses": ["Março/2026","Abril/2026","Maio/2026"],
+  "resultado": {
+    "total_receitas": 0, "total_despesas": 0, "resultado": 0, "situacao": "superavit|deficit|equilibrio"
+  },
+  "por_mes": [ { "mes": "Março/2026", "receita": 0, "despesa": 0, "resultado": 0 } ],
+  "agua": {
+    "receita": 0, "despesa": 0, "diferenca": 0, "situacao": "superavit|deficit|equilibrio",
+    "observacao": "frase curta"
+  },
+  "fundo_reserva": {
+    "arrecadado": 0, "aplicado_ou_transferido": 0, "diferenca": 0, "saldo_final": 0,
+    "tudo_aplicado": true, "observacao": "explique se o arrecadado foi de fato destinado ao fundo"
+  },
+  "taxa_extra": {
+    "existe": true, "recebido": 0, "gasto": 0, "saldo": 0, "observacao": "frase curta"
+  },
+  "indicadores": {
+    "total_arrecadado": 0, "total_gasto": 0, "saldo_final": 0,
+    "pct_pessoal": 0, "pct_manutencao": 0, "pct_administrativo": 0, "pct_consumo": 0
+  },
+  "inconsistencias": [
+    { "titulo": "", "descricao": "", "gravidade": "baixa|media|alta|critica", "evidencia": "documento/conta usada" }
+  ],
+  "checklist_documentos": [
+    { "documento": "Demonstrativo", "encontrado": true },
+    { "documento": "Extratos bancários", "encontrado": false },
+    { "documento": "Notas fiscais", "encontrado": false },
+    { "documento": "DARFs/Guias", "encontrado": false },
+    { "documento": "Atas/Assembleia", "encontrado": false },
+    { "documento": "PVO (previsão orçamentária)", "encontrado": false }
+  ],
+  "classificacao": "regular|ressalvas|correcoes|reprovavel",
+  "parecer": "parecer técnico em 3-5 frases, linguagem clara para síndico e conselho, explicando a classificação"
+}
+Regras de classificação: "regular" (🟢) sem pendências relevantes; "ressalvas" (🟡) pequenas pendências; "correcoes" (🟠) divergências que exigem ajuste; "reprovavel" (🔴) problemas graves (ex.: fundo não aplicado, despesa sem cobertura, saldo negativo inexplicado). Baseie a classificação nas inconsistências encontradas.`;
+      const resp = await chamarClaude(prompt, arquivos);
+      const json = parseJSON(resp);
+      if (!json) throw new Error("Não consegui montar a auditoria. Início da resposta: " + (resp ? resp.slice(0, 200) : "(vazia)"));
+      setAuditoria(json);
+      setEtapa("auditoria");
+    } catch (err) {
+      setErroApi(err.message);
+    } finally {
+      setCarregando(false);
+      setStatusMsg("");
+    }
   };
 
   // --- conferência do FUNDO DE RESERVA --------------------------------------
@@ -480,6 +548,7 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
     setAnalisePeriodo(null);
     setFundoReserva(null);
     setIssqnResultado(null);
+    setAuditoria(null);
     setErrosCorrigidos({});
     setErroApi("");
   };
@@ -604,9 +673,17 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
             </div>
           )}
 
-          <button disabled={arquivos.length === 0 || carregando} onClick={iniciarAnalise} style={{ ...btnPrimary, opacity: arquivos.length === 0 ? 0.5 : 1 }}>
-            {periodoMeses > 1 ? `📈 Analisar evolução (${periodoMeses} meses)` : "🔍 Analisar documentos"}
-          </button>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button disabled={arquivos.length === 0 || carregando} onClick={iniciarAnalise} style={{ ...btnPrimary, opacity: arquivos.length === 0 ? 0.5 : 1 }}>
+              {periodoMeses > 1 ? `📈 Analisar evolução (${periodoMeses} meses)` : "🔍 Analisar documentos"}
+            </button>
+            <button disabled={arquivos.length === 0 || carregando} onClick={rodarAuditoria} style={{ ...btnSecondary, opacity: arquivos.length === 0 ? 0.5 : 1 }}>
+              🛡️ Auditar prestação de contas
+            </button>
+          </div>
+          <div style={{ fontSize: 12, color: "#7A857C", marginTop: 8 }}>
+            A auditoria gera um parecer técnico (receita×despesa, água, fundo, taxa extra, indicadores, inconsistências e nota final) para síndico e conselho.
+          </div>
         </div>
       )}
 
@@ -837,6 +914,169 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
           <button disabled={carregando} onClick={gerarApresentacao} style={btnPrimary}>📊 Gerar apresentação da assembleia</button>
         </div>
       )}
+
+      {/* ====================== ETAPA: AUDITORIA (Bloco 1) ====================== */}
+      {etapa === "auditoria" && auditoria && (() => {
+        const cls = {
+          regular: { cor: "#1A8C4F", bg: VERDE[50], icon: "🟢", txt: "Regular" },
+          ressalvas: { cor: "#C8861A", bg: "#FBF3E2", icon: "🟡", txt: "Regular com ressalvas" },
+          correcoes: { cor: "#D77A1E", bg: "#FBEEE0", icon: "🟠", txt: "Necessita correções" },
+          reprovavel: { cor: "#C0392B", bg: "#FDECEC", icon: "🔴", txt: "Reprovável" },
+        }[auditoria.classificacao] || { cor: "#6B756D", bg: "#F4F6F4", icon: "⚪", txt: auditoria.classificacao };
+        const gravCor = { baixa: "#6B9E6B", media: "#C8861A", alta: "#D77A1E", critica: "#C0392B" };
+        const secTitulo = { fontSize: 16, fontWeight: 700, color: VERDE[800], margin: "0 0 12px" };
+        const card = { background: "#fff", border: "1px solid #E2E6E2", borderRadius: 14, padding: "18px 20px", marginBottom: 16 };
+        return (
+          <div id="apresentacao-print">
+            <div style={{ textAlign: "center", marginBottom: 20 }}>
+              <img src="/logo-attento.png" alt="Attento" style={{ height: 44, marginBottom: 10 }} />
+              <div style={{ fontSize: 20, fontWeight: 700, color: VERDE[800] }}>Parecer de Auditoria</div>
+              <div style={{ fontSize: 14, color: "#6B756D" }}>{condominio || "Condomínio"} · {auditoria.periodo || mesPrestacao}</div>
+            </div>
+
+            {/* classificação geral */}
+            <div style={{ ...card, background: cls.bg, border: `1px solid ${cls.cor}`, textAlign: "center" }}>
+              <div style={{ fontSize: 30 }}>{cls.icon}</div>
+              <div style={{ fontSize: 19, fontWeight: 700, color: cls.cor, margin: "4px 0 8px" }}>{cls.txt}</div>
+              <div style={{ fontSize: 14, color: "#3F473F", maxWidth: 620, margin: "0 auto", lineHeight: 1.6 }}>{auditoria.parecer}</div>
+            </div>
+
+            {/* resultado do período */}
+            {auditoria.resultado && (
+              <div style={card}>
+                <h3 style={secTitulo}>Resultado do período</h3>
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+                  {[
+                    { l: "Receitas", v: auditoria.resultado.total_receitas, c: VERDE[600] },
+                    { l: "Despesas", v: auditoria.resultado.total_despesas, c: "#C0392B" },
+                    { l: "Resultado", v: auditoria.resultado.resultado, c: (auditoria.resultado.resultado ?? 0) >= 0 ? VERDE[700] : "#C0392B" },
+                  ].map((m, i) => (
+                    <div key={i} style={{ flex: "1 1 140px", background: VERDE[50], border: `1px solid ${VERDE[200]}`, borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
+                      <div style={{ fontSize: 12, color: "#6B756D" }}>{m.l}</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: m.c }}>{brl(m.v)}</div>
+                    </div>
+                  ))}
+                </div>
+                {Array.isArray(auditoria.por_mes) && auditoria.por_mes.length > 0 && (
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead><tr style={{ background: VERDE[100] }}>
+                      <th style={th}>Mês</th><th style={{ ...th, textAlign: "right" }}>Receita</th><th style={{ ...th, textAlign: "right" }}>Despesa</th><th style={{ ...th, textAlign: "right" }}>Resultado</th>
+                    </tr></thead>
+                    <tbody>
+                      {auditoria.por_mes.map((m, i) => (
+                        <tr key={i} style={{ borderTop: "1px solid #EEF1EE" }}>
+                          <td style={td}>{m.mes}</td>
+                          <td style={{ ...td, textAlign: "right" }}>{brl(m.receita)}</td>
+                          <td style={{ ...td, textAlign: "right" }}>{brl(m.despesa)}</td>
+                          <td style={{ ...td, textAlign: "right", fontWeight: 600, color: (m.resultado ?? 0) >= 0 ? VERDE[700] : "#C0392B" }}>{brl(m.resultado)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+
+            {/* água + taxa extra lado a lado */}
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+              {auditoria.agua && (
+                <div style={{ ...card, flex: "1 1 260px" }}>
+                  <h3 style={secTitulo}>💧 Água</h3>
+                  <div style={{ fontSize: 13.5, lineHeight: 1.9 }}>
+                    <div>Receita: <strong>{brl(auditoria.agua.receita)}</strong></div>
+                    <div>Despesa: <strong>{brl(auditoria.agua.despesa)}</strong></div>
+                    <div>Diferença: <strong style={{ color: (auditoria.agua.diferenca ?? 0) >= 0 ? VERDE[700] : "#C0392B" }}>{brl(auditoria.agua.diferenca)}</strong> ({auditoria.agua.situacao})</div>
+                  </div>
+                  {auditoria.agua.observacao && <div style={{ fontSize: 12.5, color: "#6B756D", marginTop: 6 }}>{auditoria.agua.observacao}</div>}
+                </div>
+              )}
+              {auditoria.taxa_extra && auditoria.taxa_extra.existe && (
+                <div style={{ ...card, flex: "1 1 260px" }}>
+                  <h3 style={secTitulo}>➕ Taxa Extra</h3>
+                  <div style={{ fontSize: 13.5, lineHeight: 1.9 }}>
+                    <div>Recebido: <strong>{brl(auditoria.taxa_extra.recebido)}</strong></div>
+                    <div>Gasto: <strong>{brl(auditoria.taxa_extra.gasto)}</strong></div>
+                    <div>Saldo: <strong>{brl(auditoria.taxa_extra.saldo)}</strong></div>
+                  </div>
+                  {auditoria.taxa_extra.observacao && <div style={{ fontSize: 12.5, color: "#6B756D", marginTop: 6 }}>{auditoria.taxa_extra.observacao}</div>}
+                </div>
+              )}
+            </div>
+
+            {/* fundo de reserva */}
+            {auditoria.fundo_reserva && (
+              <div style={{ ...card, border: `1px solid ${auditoria.fundo_reserva.tudo_aplicado ? VERDE[200] : "#C8861A"}` }}>
+                <h3 style={secTitulo}>🏦 Fundo de Reserva</h3>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "6px 16px", fontSize: 13.5, maxWidth: 420 }}>
+                  <div>Arrecadado:</div><div style={{ textAlign: "right", fontWeight: 600 }}>{brl(auditoria.fundo_reserva.arrecadado)}</div>
+                  <div>Aplicado/transferido:</div><div style={{ textAlign: "right", fontWeight: 600 }}>{brl(auditoria.fundo_reserva.aplicado_ou_transferido)}</div>
+                  <div>Diferença:</div><div style={{ textAlign: "right", fontWeight: 700, color: (auditoria.fundo_reserva.diferenca ?? 0) === 0 ? VERDE[700] : "#C8861A" }}>{brl(auditoria.fundo_reserva.diferenca)}</div>
+                  <div>Saldo final:</div><div style={{ textAlign: "right", fontWeight: 600 }}>{brl(auditoria.fundo_reserva.saldo_final)}</div>
+                </div>
+                {auditoria.fundo_reserva.observacao && <div style={{ fontSize: 13, color: "#3F473F", marginTop: 10 }}>{auditoria.fundo_reserva.observacao}</div>}
+              </div>
+            )}
+
+            {/* indicadores */}
+            {auditoria.indicadores && (
+              <div style={card}>
+                <h3 style={secTitulo}>📊 Indicadores</h3>
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                  {[
+                    { l: "% Pessoal", v: auditoria.indicadores.pct_pessoal },
+                    { l: "% Manutenção", v: auditoria.indicadores.pct_manutencao },
+                    { l: "% Administrativo", v: auditoria.indicadores.pct_administrativo },
+                    { l: "% Consumo", v: auditoria.indicadores.pct_consumo },
+                  ].map((m, i) => (
+                    <div key={i} style={{ flex: "1 1 110px", background: VERDE[50], border: `1px solid ${VERDE[200]}`, borderRadius: 10, padding: "10px 12px", textAlign: "center" }}>
+                      <div style={{ fontSize: 20, fontWeight: 700, color: VERDE[700] }}>{(Number(m.v) || 0).toFixed(1)}%</div>
+                      <div style={{ fontSize: 11.5, color: "#6B756D" }}>{m.l}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* inconsistências */}
+            {Array.isArray(auditoria.inconsistencias) && auditoria.inconsistencias.length > 0 && (
+              <div style={card}>
+                <h3 style={secTitulo}>⚠️ Inconsistências encontradas</h3>
+                {auditoria.inconsistencias.map((inc, i) => (
+                  <div key={i} style={{ display: "flex", gap: 10, padding: "10px 0", borderTop: i > 0 ? "1px solid #EEF1EE" : "none" }}>
+                    <div style={{ flexShrink: 0, alignSelf: "flex-start", fontSize: 11, fontWeight: 700, color: "#fff", background: gravCor[inc.gravidade] || "#6B756D", borderRadius: 6, padding: "3px 8px", textTransform: "uppercase" }}>{inc.gravidade}</div>
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: "#2C322C" }}>{inc.titulo}</div>
+                      <div style={{ fontSize: 13, color: "#3F473F" }}>{inc.descricao}</div>
+                      {inc.evidencia && <div style={{ fontSize: 12, color: "#8A938C", marginTop: 2 }}>Evidência: {inc.evidencia}</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* checklist de documentos */}
+            {Array.isArray(auditoria.checklist_documentos) && auditoria.checklist_documentos.length > 0 && (
+              <div style={card}>
+                <h3 style={secTitulo}>📋 Documentos</h3>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {auditoria.checklist_documentos.map((d, i) => (
+                    <div key={i} style={{ fontSize: 13, padding: "6px 12px", borderRadius: 20, border: `1px solid ${d.encontrado ? VERDE[200] : "#E0C4C0"}`, background: d.encontrado ? VERDE[50] : "#FDF2F0", color: d.encontrado ? VERDE[700] : "#C0392B" }}>
+                      {d.encontrado ? "✔" : "✕"} {d.documento}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ fontSize: 12, color: "#8A938C", marginTop: 10 }}>Verificações que dependem de documentos ausentes não puderam ser concluídas.</div>
+              </div>
+            )}
+
+            <div className="no-print" style={{ display: "flex", gap: 10, marginTop: 8 }}>
+              <button onClick={() => window.print()} style={btnPrimary}>📄 Exportar PDF</button>
+              <button onClick={reiniciar} style={btnSecondary}>Nova auditoria</button>
+            </div>
+            <style>{`@media print { .no-print { display: none !important; } }`}</style>
+          </div>
+        );
+      })()}
 
       {/* ============ ETAPA 4 (PERÍODO): EVOLUÇÃO 3/6/12 MESES ============ */}
       {etapa === "apresentacao" && analisePeriodo && (
