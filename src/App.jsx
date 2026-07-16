@@ -575,7 +575,8 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
         </button>
       </div>
 
-      {/* STEPPER */}
+      {/* STEPPER (escondido nas telas de resultado: auditoria e evolução de período) */}
+      {!(etapa === "auditoria" || (etapa === "apresentacao" && analisePeriodo)) && (
       <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
         {ETAPAS.map((e, i) => {
           const ativo = i === indiceEtapa;
@@ -590,6 +591,7 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
           );
         })}
       </div>
+      )}
 
       {/* ERRO API */}
       {erroApi && (
