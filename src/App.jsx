@@ -19,6 +19,31 @@ const VERDE = {
   50: "#EDFBF3",
 };
 
+// ============================================================================
+// ESPECIFICAÇÕES DA ATTENTO POR TIPO DE ANÁLISE
+// Regras fixas que o agente sempre aplica. Para alterar, edite este bloco.
+// ============================================================================
+const REGRAS_ATTENTO = {
+  comum: `REGIME DE CAIXA: receitas e despesas contam pela DATA DE PAGAMENTO, nunca por competência. Um documento de um mês pago no mês seguinte é normal.
+Os demonstrativos vêm por centro de custo (01.01 Ordinária, 01.02 Fundo de Reserva, 01.12 Taxa Extra, 01.13 Conta Capital, 01.14 Poupança). Receitas começam com 01., despesas com 02.
+Água: Receita 01.02.01 x Despesa 02.07.03. Gás: Receita 01.02.06 x Despesa 02.07.02.
+Nunca invente valores. Se faltar um documento para uma verificação, diga que não foi possível conferir e qual documento falta.`,
+
+  auditoria: `Faça TODAS as conferências possíveis com os documentos recebidos:
+- Saldo do extrato x saldo do demonstrativo (se houver extrato).
+- Previsto x Realizado (se houver PVO).
+- Fundo de reserva: arrecadado x aplicado. ATENÇÃO: alguns condomínios aplicam DENTRO do mês e outros aplicam no MÊS SEGUINTE — use o modo informado na análise; não trate aplicação no mês seguinte como erro quando esse for o modo do condomínio.
+- Água: receita x despesa. Gás: receita x despesa.`,
+
+  mensal: `Além de todas as conferências da auditoria, com o EXTRATO BANCÁRIO:
+- Faça a conciliação bancária (lançamentos do extrato x demonstrativo).
+- Verifique se cada despesa está no plano de contas correto.
+- Se o banco for COOPERATIVA (identifique pelo nome no extrato: Sicoob, Sicredi, Cresol, Unicred, etc.), verifique se houve DISTRIBUIÇÃO DE RESULTADO/SOBRAS creditada — isso ocorre geralmente uma vez ao ano; sinalize se o crédito apareceu.`,
+
+  periodo: `Além de todas as identificações da auditoria:
+- Identifique DESPESAS FIXAS/RECORRENTES (energia, água, salários, encargos, contabilidade, administradora, elevadores, portaria, limpeza, etc.) e verifique se houve algum mês em que uma despesa fixa deixou de ser paga.`,
+};
+
 const ETAPAS = [
   { id: "upload", n: 1, label: "Documentos", icon: "📄" },
   { id: "analise", n: 2, label: "Análise", icon: "🔍" },
@@ -127,6 +152,7 @@ export default function AnalistaFinanceiroAttento() {
   const [issqnResultado, setIssqnResultado] = useState(null); // { encontrado: bool, valor, detalhe }
   // Auditoria (Bloco 1)
   const [auditoria, setAuditoria] = useState(null);
+  const [modoFundo, setModoFundo] = useState("mes"); // "mes" | "subsequente"
   const inputRef = useRef(null);
 
   const indiceEtapa = ETAPAS.findIndex((e) => e.id === etapa);
@@ -157,6 +183,10 @@ export default function AnalistaFinanceiroAttento() {
         : "";
       const prompt = `Você é um analista contábil de uma administradora de condomínios (Attento).
 Analise os documentos do condomínio "${condominio || "—"}", referentes à prestação de contas com pagamentos do mês "${mesPrestacao || "—"}" (regime de caixa — as despesas aparecem pela data de pagamento).
+
+ESPECIFICAÇÕES DA ATTENTO (análise mensal):
+${REGRAS_ATTENTO.comum}
+${REGRAS_ATTENTO.mensal}
 ${regrasTxt}
 REGIME CONTÁBIL DA ATTENTO — REGIME DE CAIXA (leia antes de apontar qualquer erro):
 - Os condomínios usam REGIME DE CAIXA PURO. O que vale é a DATA DE PAGAMENTO, não a data a que a despesa se refere.
@@ -218,6 +248,10 @@ Responda APENAS com JSON, sem markdown, neste formato exato:
         : "";
       const prompt = `Você é o analista contábil da administradora Attento.
 Os documentos anexados cobrem ${periodoMeses} meses de prestação de contas do condomínio "${condominio || "—"}" (regime de caixa — valores pela data de pagamento). A prestação mais recente é "${mesPrestacao}".
+
+ESPECIFICAÇÕES DA ATTENTO (análise de período):
+${REGRAS_ATTENTO.comum}
+${REGRAS_ATTENTO.periodo}
 ${regrasTxt}
 Tarefa: monte a EVOLUÇÃO do período para apresentar em assembleia, em linguagem de leigo. Para CADA mês identificado nos documentos:
 - agrupe as despesas em categorias do dia a dia (Água, Energia, Limpeza, Manutenção, Administração, Salários/Pessoal, Outros);
@@ -271,6 +305,11 @@ Ordene "meses" do mais antigo para o mais recente. "categorias_periodo" deve lis
         : "";
       const prompt = `Você é auditor condominial e contador especializado em condomínios sob REGIME DE CAIXA (receitas/despesas pela data de pagamento; nunca competência).
 Audite a prestação de contas do condomínio "${condominio || "—"}" com base EXCLUSIVAMENTE nos documentos anexados. Não invente valores. Quando faltar um documento para uma verificação, marque como "não verificável" e diga qual documento falta.
+
+ESPECIFICAÇÕES DA ATTENTO:
+${REGRAS_ATTENTO.comum}
+${REGRAS_ATTENTO.auditoria}
+Modo de aplicação do fundo de reserva DESTE condomínio: ${modoFundo === "subsequente" ? "aplica no MÊS SEGUINTE ao da arrecadação" : "aplica DENTRO do próprio mês"}.
 ${regrasTxt}
 Os documentos podem vir como "Demonstrativo Contábil de Centro de Custos", organizados em centros como 01.01 Ordinária, 01.02 Fundo de Reserva, 01.12 Taxa Extra, 01.13 Conta Capital, 01.14 Poupança. As receitas começam com 01. e despesas com 02. Pode haver várias colunas de meses com Total e Média.
 
@@ -283,6 +322,10 @@ Faça estas verificações e responda APENAS com JSON (valores numéricos sem "R
   },
   "por_mes": [ { "mes": "Março/2026", "receita": 0, "despesa": 0, "resultado": 0 } ],
   "agua": {
+    "receita": 0, "despesa": 0, "diferenca": 0, "situacao": "superavit|deficit|equilibrio",
+    "observacao": "frase curta"
+  },
+  "gas": {
     "receita": 0, "despesa": 0, "diferenca": 0, "situacao": "superavit|deficit|equilibrio",
     "observacao": "frase curta"
   },
@@ -675,6 +718,19 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
             </div>
           )}
 
+          {/* modo de aplicação do fundo de reserva (usado na auditoria) */}
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 13, fontWeight: 600, color: VERDE[700] }}>Fundo de reserva deste condomínio</label>
+            <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+              {[{ v: "mes", t: "Aplica no mês" }, { v: "subsequente", t: "Aplica no mês seguinte" }].map((o) => (
+                <button key={o.v} onClick={() => setModoFundo(o.v)}
+                  style={{ padding: "8px 16px", borderRadius: 8, border: `1px solid ${modoFundo === o.v ? VERDE[600] : "#D6DAD6"}`, background: modoFundo === o.v ? VERDE[500] : "#fff", color: modoFundo === o.v ? "#fff" : VERDE[700], fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
+                  {o.t}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button disabled={arquivos.length === 0 || carregando} onClick={iniciarAnalise} style={{ ...btnPrimary, opacity: arquivos.length === 0 ? 0.5 : 1 }}>
               {periodoMeses > 1 ? `📈 Analisar evolução (${periodoMeses} meses)` : "🔍 Analisar documentos"}
@@ -990,6 +1046,17 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
                     <div>Diferença: <strong style={{ color: (auditoria.agua.diferenca ?? 0) >= 0 ? VERDE[700] : "#C0392B" }}>{brl(auditoria.agua.diferenca)}</strong> ({auditoria.agua.situacao})</div>
                   </div>
                   {auditoria.agua.observacao && <div style={{ fontSize: 12.5, color: "#6B756D", marginTop: 6 }}>{auditoria.agua.observacao}</div>}
+                </div>
+              )}
+              {auditoria.gas && (
+                <div style={{ ...card, flex: "1 1 260px" }}>
+                  <h3 style={secTitulo}>🔥 Gás</h3>
+                  <div style={{ fontSize: 13.5, lineHeight: 1.9 }}>
+                    <div>Receita: <strong>{brl(auditoria.gas.receita)}</strong></div>
+                    <div>Despesa: <strong>{brl(auditoria.gas.despesa)}</strong></div>
+                    <div>Diferença: <strong style={{ color: (auditoria.gas.diferenca ?? 0) >= 0 ? VERDE[700] : "#C0392B" }}>{brl(auditoria.gas.diferenca)}</strong> ({auditoria.gas.situacao})</div>
+                  </div>
+                  {auditoria.gas.observacao && <div style={{ fontSize: 12.5, color: "#6B756D", marginTop: 6 }}>{auditoria.gas.observacao}</div>}
                 </div>
               )}
               {auditoria.taxa_extra && auditoria.taxa_extra.existe && (
