@@ -1,4 +1,5 @@
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
+import { registrarAnalise, listarAnalises } from "./supabase";
 
 // ============================================================================
 // ANALISTA FINANCEIRO ATTENTO — Administradora de Condomínios
@@ -153,6 +154,13 @@ export default function AnalistaFinanceiroAttento() {
   // Auditoria (Bloco 1)
   const [auditoria, setAuditoria] = useState(null);
   const [modoFundo, setModoFundo] = useState("mes"); // "mes" | "subsequente"
+  // Gestora (quem faz a análise) e relatório de controle
+  const [gestora, setGestora] = useState(() => {
+    try { return localStorage.getItem("attento_gestora") || ""; } catch { return ""; }
+  });
+  const [mostrarRelatorio, setMostrarRelatorio] = useState(false);
+  const [relatorio, setRelatorio] = useState([]);
+  const [relatorioMes, setRelatorioMes] = useState("");
   const inputRef = useRef(null);
 
   const indiceEtapa = ETAPAS.findIndex((e) => e.id === etapa);
@@ -228,6 +236,7 @@ Responda APENAS com JSON, sem markdown, neste formato exato:
       errosReais.forEach((e) => (inicial[e.id] = false));
       setErrosCorrigidos(inicial);
       setEtapa("analise");
+      registrarAnalise({ condominio, periodo: mesPrestacao, tipo_analise: "Mensal", gestora });
     } catch (err) {
       setErroApi(err.message);
     } finally {
@@ -279,6 +288,7 @@ Ordene "meses" do mais antigo para o mais recente. "categorias_periodo" deve lis
       }
       setAnalisePeriodo(json);
       setEtapa("apresentacao");
+      registrarAnalise({ condominio, periodo: `${periodoMeses} meses até ${mesPrestacao}`, tipo_analise: "Período", gestora });
     } catch (err) {
       setErroApi(err.message);
     } finally {
@@ -360,6 +370,7 @@ Regras de classificação: "regular" (🟢) sem pendências relevantes; "ressalv
       if (!json) throw new Error("Não consegui montar a auditoria. Início da resposta: " + (resp ? resp.slice(0, 200) : "(vazia)"));
       setAuditoria(json);
       setEtapa("auditoria");
+      registrarAnalise({ condominio, periodo: json.periodo || mesPrestacao, tipo_analise: "Auditoria", gestora });
     } catch (err) {
       setErroApi(err.message);
     } finally {
@@ -596,6 +607,17 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
     setErroApi("");
   };
 
+  const abrirRelatorio = async () => {
+    setMostrarRelatorio(true);
+    setErroApi("");
+    try {
+      const dados = await listarAnalises();
+      setRelatorio(dados || []);
+    } catch (e) {
+      setErroApi(e.message);
+    }
+  };
+
   const brl = (v) =>
     Number(v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
@@ -613,9 +635,14 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
             <div style={{ color: VERDE[200], fontSize: 13 }}>Administradora de Condomínios · Análise contábil + Assembleia</div>
           </div>
         </div>
-        <button onClick={reiniciar} style={{ background: "transparent", border: `1px solid ${VERDE[500]}`, color: VERDE[100], borderRadius: 8, padding: "8px 14px", fontSize: 13, cursor: "pointer" }}>
-          Reiniciar
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={abrirRelatorio} style={{ background: VERDE[500], border: "none", color: "#fff", borderRadius: 8, padding: "8px 14px", fontSize: 13, cursor: "pointer", fontWeight: 600 }}>
+            📋 Relatório
+          </button>
+          <button onClick={reiniciar} style={{ background: "transparent", border: `1px solid ${VERDE[500]}`, color: VERDE[100], borderRadius: 8, padding: "8px 14px", fontSize: 13, cursor: "pointer" }}>
+            Reiniciar
+          </button>
+        </div>
       </div>
 
       {/* STEPPER (escondido nas telas de resultado: auditoria e evolução de período) */}
@@ -636,6 +663,59 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
       </div>
       )}
 
+      {/* ===================== RELATÓRIO DE CONTROLE ===================== */}
+      {mostrarRelatorio && (() => {
+        const meses = Array.from(new Set(relatorio.map((r) => r.periodo).filter(Boolean)));
+        const filtrado = relatorioMes ? relatorio.filter((r) => r.periodo === relatorioMes) : relatorio;
+        const fmtData = (s) => { try { return new Date(s).toLocaleDateString("pt-BR"); } catch { return s; } };
+        return (
+          <div style={{ background: "#fff", border: "1px solid #E2E6E2", borderRadius: 14, padding: "20px 24px", marginBottom: 20 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: VERDE[800] }}>📋 Relatório de análises</div>
+              <button onClick={() => setMostrarRelatorio(false)} style={{ background: "transparent", border: "1px solid #D6DAD6", color: "#6B756D", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer" }}>Fechar</button>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+              <label style={{ fontSize: 13, color: VERDE[700] }}>Filtrar por período:</label>
+              <select value={relatorioMes} onChange={(e) => setRelatorioMes(e.target.value)} style={{ ...inp, width: "auto", marginTop: 0, padding: "8px 12px" }}>
+                <option value="">Todos</option>
+                {meses.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+              <span style={{ fontSize: 13, color: "#8A938C" }}>{filtrado.length} análise(s)</span>
+            </div>
+
+            {filtrado.length === 0 ? (
+              <div style={{ fontSize: 14, color: "#8A938C", padding: "20px 0", textAlign: "center" }}>Nenhuma análise registrada ainda.</div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: VERDE[100] }}>
+                      <th style={th}>Condomínio</th>
+                      <th style={th}>Período</th>
+                      <th style={th}>Tipo</th>
+                      <th style={th}>Gestora</th>
+                      <th style={th}>Data</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtrado.map((r, i) => (
+                      <tr key={r.id || i} style={{ borderTop: "1px solid #EEF1EE" }}>
+                        <td style={{ ...td, fontWeight: 600 }}>{r.condominio}</td>
+                        <td style={td}>{r.periodo || "—"}</td>
+                        <td style={td}>{r.tipo_analise || "—"}</td>
+                        <td style={td}>{r.gestora || "—"}</td>
+                        <td style={td}>{fmtData(r.criado_em)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* ERRO API */}
       {erroApi && (
         <div style={{ background: "#FDECEC", border: "1px solid #F3B4B4", color: "#8C2020", borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 14 }}>
@@ -655,6 +735,11 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
       {/* ====================== ETAPA 1: UPLOAD ====================== */}
       {etapa === "upload" && (
         <div>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 13, fontWeight: 600, color: VERDE[700] }}>Seu nome (gestora)</label>
+            <input value={gestora} onChange={(e) => { setGestora(e.target.value); try { localStorage.setItem("attento_gestora", e.target.value); } catch {} }} placeholder="Ex.: Maria" style={{ ...inp, borderColor: gestora ? "#D6DAD6" : "#C8861A" }} />
+            {!gestora && <div style={{ fontSize: 12, color: "#C8861A", marginTop: 4 }}>Preencha seu nome para registrar quem fez cada análise no relatório.</div>}
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
             <div>
               <label style={{ fontSize: 13, fontWeight: 600, color: VERDE[700] }}>Condomínio</label>
