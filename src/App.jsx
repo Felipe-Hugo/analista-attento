@@ -1227,7 +1227,15 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
               <button onClick={() => window.print()} style={btnPrimary}>📄 Exportar PDF</button>
               <button onClick={reiniciar} style={btnSecondary}>Nova auditoria</button>
             </div>
-            <style>{`@media print { .no-print { display: none !important; } }`}</style>
+            <style>{`
+              @media print {
+                .no-print { display: none !important; }
+                @page { size: A4 landscape; margin: 10mm; }
+                #apresentacao-print table { width: 100% !important; table-layout: fixed; font-size: 9px !important; word-break: break-word; }
+                #apresentacao-print th, #apresentacao-print td { padding: 3px 4px !important; }
+                #apresentacao-print { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+              }
+            `}</style>
           </div>
         );
       })()}
@@ -1321,7 +1329,15 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
           <div className="no-print" style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <button onClick={() => window.print()} style={btnPrimary}>📄 Exportar PDF</button>
           </div>
-          <style>{`@media print { .no-print { display: none !important; } }`}</style>
+          <style>{`
+              @media print {
+                .no-print { display: none !important; }
+                @page { size: A4 landscape; margin: 10mm; }
+                #apresentacao-print table { width: 100% !important; table-layout: fixed; font-size: 9px !important; word-break: break-word; }
+                #apresentacao-print th, #apresentacao-print td { padding: 3px 4px !important; }
+                #apresentacao-print { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+              }
+            `}</style>
         </div>
       )}
 
@@ -1403,7 +1419,15 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
             <button onClick={() => window.print()} style={btnPrimary}>📄 Exportar PDF</button>
             <button onClick={() => alert("A exportação em PPTX será gerada no backend (igual ao da Holder). Por enquanto use o PDF.")} style={btnSecondary}>📊 Exportar slides</button>
           </div>
-          <style>{`@media print { .no-print { display: none !important; } }`}</style>
+          <style>{`
+              @media print {
+                .no-print { display: none !important; }
+                @page { size: A4 landscape; margin: 10mm; }
+                #apresentacao-print table { width: 100% !important; table-layout: fixed; font-size: 9px !important; word-break: break-word; }
+                #apresentacao-print th, #apresentacao-print td { padding: 3px 4px !important; }
+                #apresentacao-print { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+              }
+            `}</style>
         </div>
       )}
     </div>
