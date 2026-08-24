@@ -341,7 +341,8 @@ Faça estas verificações e responda APENAS com JSON (valores numéricos sem "R
   },
   "fundo_reserva": {
     "arrecadado": 0, "aplicado_ou_transferido": 0, "diferenca": 0, "saldo_final": 0,
-    "tudo_aplicado": true, "observacao": "explique se o arrecadado foi de fato destinado ao fundo"
+    "tudo_aplicado": true, "pendente": false, "veredito": "aplicado corretamente | aplicação pendente | não aplicado",
+    "observacao": "explique se o arrecadado foi de fato destinado ao fundo, considerando o modo de aplicação informado"
   },
   "taxa_extra": {
     "existe": true, "recebido": 0, "gasto": 0, "saldo": 0, "observacao": "frase curta"
@@ -352,6 +353,15 @@ Faça estas verificações e responda APENAS com JSON (valores numéricos sem "R
   },
   "inconsistencias": [
     { "titulo": "", "descricao": "", "gravidade": "baixa|media|alta|critica", "evidencia": "documento/conta usada" }
+  ],
+  "despesas_fixas": [
+    { "despesa": "Energia Elétrica", "meses_pagos": ["Março/2026","Abril/2026"], "meses_sem_pagamento": ["Maio/2026"], "ok": false, "observacao": "faltou pagamento em maio" }
+  ],
+  "parcelamentos": [
+    { "nf": "397851", "fornecedor": "", "parcelas_identificadas": "1/4, 2/4, 3/4, 4/4", "completo": true, "mesmo_centro": true, "situacao": "ok|conferir|incompleto", "observacao": "" }
+  ],
+  "reclassificacoes": [
+    { "lancamento": "descrição do lançamento", "conta_atual": "02.04.16 Manut. Elétrica/Hidráulica", "conta_sugerida": "02.04.15 Sistema de Segurança", "motivo": "a descrição indica CFTV/câmeras", "valor": 0 }
   ],
   "checklist_documentos": [
     { "documento": "Demonstrativo", "encontrado": true },
@@ -364,7 +374,13 @@ Faça estas verificações e responda APENAS com JSON (valores numéricos sem "R
   "classificacao": "regular|ressalvas|correcoes|reprovavel",
   "parecer": "parecer técnico em 3-5 frases, linguagem clara para síndico e conselho, explicando a classificação"
 }
-Regras de classificação: "regular" (🟢) sem pendências relevantes; "ressalvas" (🟡) pequenas pendências; "correcoes" (🟠) divergências que exigem ajuste; "reprovavel" (🔴) problemas graves (ex.: fundo não aplicado, despesa sem cobertura, saldo negativo inexplicado). Baseie a classificação nas inconsistências encontradas.`;
+Regras de classificação: "regular" (🟢) sem pendências relevantes; "ressalvas" (🟡) pequenas pendências; "correcoes" (🟠) divergências que exigem ajuste; "reprovavel" (🔴) problemas graves (ex.: fundo não aplicado, despesa sem cobertura, saldo negativo inexplicado). Baseie a classificação nas inconsistências encontradas.
+
+VERIFICAÇÕES ADICIONAIS (preencha as listas correspondentes; se o documento necessário não estiver presente, deixe a lista vazia):
+1. DESPESAS FIXAS: identifique despesas recorrentes (energia, água, gás, salários, encargos, contabilidade/administração, elevadores, portaria, limpeza, jardim, seguro, internet). Para cada uma, verifique em quais meses foi paga e em quais NÃO houve pagamento. Marque "ok": false se faltou pagamento em algum mês. Dê o veredito claro por despesa.
+2. FUNDO DE RESERVA: crave o veredito em "veredito" e "pendente" — considere o modo de aplicação informado (no mês ou no mês seguinte). Se aplica no mês seguinte, não marque como pendente enquanto estiver dentro do prazo.
+3. PARCELAMENTOS (requer Razão por Conta Contábil com descrição dos lançamentos): identifique lançamentos parcelados (ex.: "1/4", "2/4"). Para cada NF/fornecedor, verifique se a sequência está completa e se todas as parcelas estão no MESMO centro de custo/conta. Situação "ok" (completo e mesmo centro), "conferir" (falta confirmar alguma parcela) ou "incompleto".
+4. RECLASSIFICAÇÕES (requer Razão com descrição): leia a DESCRIÇÃO de cada lançamento e detecte quando a conta usada não combina com a descrição (ex.: "instalação de câmeras" lançado em Informática deveria ser Sistema de Segurança). Sugira conta_atual → conta_sugerida com o motivo. Padronize: parcelas da mesma despesa devem ficar na mesma conta.`;
       const resp = await chamarClaude(prompt, arquivos);
       const json = parseJSON(resp);
       if (!json) throw new Error("Não consegui montar a auditoria. Início da resposta: " + (resp ? resp.slice(0, 200) : "(vazia)"));
@@ -1161,6 +1177,13 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
             {auditoria.fundo_reserva && (
               <div style={{ ...card, border: `1px solid ${auditoria.fundo_reserva.tudo_aplicado ? VERDE[200] : "#C8861A"}` }}>
                 <h3 style={secTitulo}>🏦 Fundo de Reserva</h3>
+                {auditoria.fundo_reserva.veredito && (() => {
+                  const pend = auditoria.fundo_reserva.pendente;
+                  const naoApl = /não aplic/i.test(auditoria.fundo_reserva.veredito || "");
+                  const cor = naoApl ? "#C0392B" : pend ? "#C8861A" : VERDE[700];
+                  const icon = naoApl ? "🔴" : pend ? "🟡" : "🟢";
+                  return <div style={{ fontSize: 15, fontWeight: 700, color: cor, marginBottom: 10 }}>{icon} {auditoria.fundo_reserva.veredito}</div>;
+                })()}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "6px 16px", fontSize: 13.5, maxWidth: 420 }}>
                   <div>Arrecadado:</div><div style={{ textAlign: "right", fontWeight: 600 }}>{brl(auditoria.fundo_reserva.arrecadado)}</div>
                   <div>Aplicado/transferido:</div><div style={{ textAlign: "right", fontWeight: 600 }}>{brl(auditoria.fundo_reserva.aplicado_ou_transferido)}</div>
@@ -1203,6 +1226,72 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
                       <div style={{ fontSize: 13, color: "#3F473F" }}>{inc.descricao}</div>
                       {inc.evidencia && <div style={{ fontSize: 12, color: "#8A938C", marginTop: 2 }}>Evidência: {inc.evidencia}</div>}
                     </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* despesas fixas */}
+            {Array.isArray(auditoria.despesas_fixas) && auditoria.despesas_fixas.length > 0 && (
+              <div style={card}>
+                <h3 style={secTitulo}>🔁 Despesas fixas — foram pagas?</h3>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead><tr style={{ background: VERDE[100] }}>
+                    <th style={th}>Despesa</th><th style={th}>Situação</th><th style={th}>Meses sem pagamento</th>
+                  </tr></thead>
+                  <tbody>
+                    {auditoria.despesas_fixas.map((d, i) => (
+                      <tr key={i} style={{ borderTop: "1px solid #EEF1EE" }}>
+                        <td style={{ ...td, fontWeight: 600 }}>{d.despesa}</td>
+                        <td style={td}>{d.ok ? <span style={{ color: VERDE[700], fontWeight: 600 }}>✔ Paga em todos</span> : <span style={{ color: "#C0392B", fontWeight: 600 }}>✕ Faltou</span>}</td>
+                        <td style={td}>{Array.isArray(d.meses_sem_pagamento) && d.meses_sem_pagamento.length > 0 ? d.meses_sem_pagamento.join(", ") : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* parcelamentos */}
+            {Array.isArray(auditoria.parcelamentos) && auditoria.parcelamentos.length > 0 && (
+              <div style={card}>
+                <h3 style={secTitulo}>🧩 Parcelamentos</h3>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead><tr style={{ background: VERDE[100] }}>
+                    <th style={th}>NF</th><th style={th}>Fornecedor</th><th style={th}>Parcelas</th><th style={th}>Mesmo centro?</th><th style={th}>Situação</th>
+                  </tr></thead>
+                  <tbody>
+                    {auditoria.parcelamentos.map((p, i) => {
+                      const sc = p.situacao === "ok" ? VERDE[600] : p.situacao === "incompleto" ? "#C0392B" : "#C8861A";
+                      const st = p.situacao === "ok" ? "🟢 Completo" : p.situacao === "incompleto" ? "🔴 Incompleto" : "🟡 Conferir";
+                      return (
+                        <tr key={i} style={{ borderTop: "1px solid #EEF1EE" }}>
+                          <td style={{ ...td, fontWeight: 600 }}>{p.nf}</td>
+                          <td style={td}>{p.fornecedor || "—"}</td>
+                          <td style={td}>{p.parcelas_identificadas}</td>
+                          <td style={td}>{p.mesmo_centro ? "Sim" : "Não"}</td>
+                          <td style={{ ...td, color: sc, fontWeight: 600 }}>{st}{p.observacao ? ` · ${p.observacao}` : ""}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* reclassificações sugeridas */}
+            {Array.isArray(auditoria.reclassificacoes) && auditoria.reclassificacoes.length > 0 && (
+              <div style={card}>
+                <h3 style={secTitulo}>🔀 Reclassificações sugeridas</h3>
+                {auditoria.reclassificacoes.map((rc, i) => (
+                  <div key={i} style={{ padding: "10px 0", borderTop: i > 0 ? "1px solid #EEF1EE" : "none" }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "#2C322C" }}>{rc.lancamento}{rc.valor ? ` — ${brl(rc.valor)}` : ""}</div>
+                    <div style={{ fontSize: 13, marginTop: 2 }}>
+                      <span style={{ color: "#C0392B" }}>{rc.conta_atual}</span>
+                      <span style={{ color: "#8A938C" }}> → </span>
+                      <span style={{ color: VERDE[700], fontWeight: 600 }}>{rc.conta_sugerida}</span>
+                    </div>
+                    {rc.motivo && <div style={{ fontSize: 12.5, color: "#6B756D", marginTop: 2 }}>{rc.motivo}</div>}
                   </div>
                 ))}
               </div>
