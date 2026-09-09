@@ -357,6 +357,9 @@ Faça estas verificações e responda APENAS com JSON (valores numéricos sem "R
   "despesas_fixas": [
     { "despesa": "Energia Elétrica", "meses_pagos": ["Março/2026","Abril/2026"], "meses_sem_pagamento": ["Maio/2026"], "ok": false, "observacao": "faltou pagamento em maio" }
   ],
+  "descricoes_fora_padrao": [
+    { "conta": "02.02.01 Serviços Terceirizados", "descricao_atual": "PAGTO SERVIÇO", "faltando": "mês/ano de competência e número da NF" }
+  ],
   "parcelamentos": [
     { "nf": "397851", "fornecedor": "", "parcelas_identificadas": "1/4, 2/4, 3/4, 4/4", "completo": true, "mesmo_centro": true, "situacao": "ok|conferir|incompleto", "observacao": "" }
   ],
@@ -378,6 +381,7 @@ Regras de classificação: "regular" (🟢) sem pendências relevantes; "ressalv
 
 VERIFICAÇÕES ADICIONAIS (preencha as listas correspondentes; se o documento necessário não estiver presente, deixe a lista vazia):
 1. DESPESAS FIXAS: identifique despesas recorrentes (energia, água, gás, salários, encargos, contabilidade/administração, elevadores, portaria, limpeza, jardim, seguro, internet). Para cada uma, verifique em quais meses foi paga e em quais NÃO houve pagamento. Marque "ok": false se faltou pagamento em algum mês. Dê o veredito claro por despesa.
+1b. PADRÃO DE DESCRIÇÃO DAS DESPESAS FIXAS (requer Razão com descrição): a descrição de cada lançamento de despesa fixa deve seguir o padrão "[serviço] - [mês/ano de competência] - NF:[número]" (ex.: "Serviços terceirizados mensal - Jul/26 - NF:1234"). Liste em "descricoes_fora_padrao" APENAS os lançamentos de despesa fixa cuja descrição NÃO segue esse padrão, dizendo o que está faltando (mês/ano, número da NF, ou o serviço). Não sugira a descrição corrigida, apenas aponte a irregularidade. Se não houver Razão com descrições, deixe a lista vazia.
 2. FUNDO DE RESERVA: crave o veredito em "veredito" e "pendente" — considere o modo de aplicação informado (no mês ou no mês seguinte). Se aplica no mês seguinte, não marque como pendente enquanto estiver dentro do prazo.
 3. PARCELAMENTOS (requer Razão por Conta Contábil com descrição dos lançamentos): identifique lançamentos parcelados (ex.: "1/4", "2/4"). Para cada NF/fornecedor, verifique se a sequência está completa e se todas as parcelas estão no MESMO centro de custo/conta. Situação "ok" (completo e mesmo centro), "conferir" (falta confirmar alguma parcela) ou "incompleto".
 4. RECLASSIFICAÇÕES (requer Razão com descrição): leia a DESCRIÇÃO de cada lançamento e detecte quando a conta usada não combina com a descrição (ex.: "instalação de câmeras" lançado em Informática deveria ser Sistema de Segurança). Sugira conta_atual → conta_sugerida com o motivo. Padronize: parcelas da mesma despesa devem ficar na mesma conta.`;
@@ -1245,6 +1249,28 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
                         <td style={{ ...td, fontWeight: 600 }}>{d.despesa}</td>
                         <td style={td}>{d.ok ? <span style={{ color: VERDE[700], fontWeight: 600 }}>✔ Paga em todos</span> : <span style={{ color: "#C0392B", fontWeight: 600 }}>✕ Faltou</span>}</td>
                         <td style={td}>{Array.isArray(d.meses_sem_pagamento) && d.meses_sem_pagamento.length > 0 ? d.meses_sem_pagamento.join(", ") : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* descrições fora do padrão */}
+            {Array.isArray(auditoria.descricoes_fora_padrao) && auditoria.descricoes_fora_padrao.length > 0 && (
+              <div style={card}>
+                <h3 style={secTitulo}>✍️ Descrições fora do padrão</h3>
+                <div style={{ fontSize: 12.5, color: "#6B756D", marginBottom: 10 }}>Padrão esperado: <strong>[serviço] - [mês/ano] - NF:[número]</strong></div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead><tr style={{ background: VERDE[100] }}>
+                    <th style={th}>Conta</th><th style={th}>Descrição atual</th><th style={th}>Falta</th>
+                  </tr></thead>
+                  <tbody>
+                    {auditoria.descricoes_fora_padrao.map((d, i) => (
+                      <tr key={i} style={{ borderTop: "1px solid #EEF1EE" }}>
+                        <td style={{ ...td, fontWeight: 600 }}>{d.conta}</td>
+                        <td style={td}>{d.descricao_atual}</td>
+                        <td style={{ ...td, color: "#C8861A" }}>{d.faltando}</td>
                       </tr>
                     ))}
                   </tbody>
