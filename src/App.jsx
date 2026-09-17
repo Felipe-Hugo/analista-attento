@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from "react";
+import React, { useState, useRef } from "react";
 import { registrarAnalise, listarAnalises } from "./supabase";
 
 // ============================================================================
@@ -69,15 +69,52 @@ const PERIODOS = [
 ];
 
 // --- chamada à API Anthropic (idêntica à estrutura do app da Holder) -------
+// A Vercel recusa requisições acima de ~4,5 MB. Em base64 o arquivo cresce ~33%.
+const LIMITE_ENVIO_BYTES = 4.3 * 1024 * 1024;
+
 async function chamarClaude(prompt, arquivosBase64 = []) {
+  // informa ao agente qual documento é qual (tipo escolhido pela gestora na tela)
+  let promptFinal = prompt;
+  if (arquivosBase64.length) {
+    const lista = arquivosBase64
+      .map((a, i) => `${i + 1}. "${a.name}" — ${TIPOS_DOC.find((t) => t.key === a.tipo)?.label || "Documento"}`)
+      .join("\n");
+    promptFinal = `DOCUMENTOS ANEXADOS (na ordem em que aparecem; o tipo foi informado pela gestora e pode estar impreciso — confirme pelo conteúdo):\n${lista}\n\n${prompt}`;
+  }
+  const body = JSON.stringify({
+    prompt: promptFinal,
+    arquivos: arquivosBase64.map(({ name, media_type, data }) => ({ name, media_type, data })),
+  });
+  if (body.length > LIMITE_ENVIO_BYTES) {
+    throw new Error(`Os documentos somam ${(body.length / 1024 / 1024).toFixed(1)} MB e o limite de envio é de cerca de 4 MB. Reduza/comprima os PDFs ou envie menos arquivos por vez.`);
+  }
   const response = await fetch("/api/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, arquivos: arquivosBase64 }),
+    body,
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data?.erro || "Erro ao chamar o analista");
+  let data = null;
+  try { data = await response.json(); } catch { /* resposta não-JSON (erro da plataforma) */ }
+  if (!response.ok || !data) {
+    if (response.status === 413) throw new Error("Os documentos são grandes demais para envio. Reduza/comprima os PDFs ou envie menos arquivos por vez.");
+    if (response.status === 504) throw new Error("A análise demorou mais que o tempo limite. Tente com menos documentos ou um período menor.");
+    throw new Error(data?.erro || `Erro ao chamar o analista (HTTP ${response.status})`);
+  }
+  if (data.cortada) {
+    throw new Error("A resposta do analista ficou grande demais e foi cortada antes do fim. Tente com menos documentos ou um período menor.");
+  }
   return data.texto || "";
+}
+
+// sugere o tipo do documento pelo nome do arquivo (a gestora pode trocar na tela)
+function sugerirTipo(nome) {
+  const n = (nome || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  if (/razao/.test(n)) return "razao";
+  if (/extrato/.test(n)) return "extratos";
+  if (/demonstrativo|centro.?de.?custo/.test(n)) return "demonstrativo";
+  if (/\bnfs?\b|nota.?fiscal|notas/.test(n)) return "nfs";
+  if (/\bata\b|assembleia/.test(n)) return "ata";
+  return "balancete";
 }
 
 function lerArquivoBase64(file) {
@@ -106,6 +143,16 @@ function parseJSON(texto) {
       return null;
     }
   }
+}
+
+// Proteção: descarta "erros" de classificação onde a conta errada e a correta são
+// iguais (não é erro real). Erros de valor/duplicidade/sem documento mantêm a conta.
+const TIPOS_ERRO_SEM_TROCA = ["valor", "duplicidade", "sem_documento"];
+const mesmaConta = (e) => (e.conta_errada || "").trim().toLowerCase() === (e.conta_correta || "").trim().toLowerCase();
+function filtrarErrosReais(erros) {
+  return (erros || [])
+    .filter((e) => TIPOS_ERRO_SEM_TROCA.includes(e.tipo) || !mesmaConta(e))
+    .map((e, i) => ({ ...e, id: e.id ?? i + 1 }));
 }
 
 const MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
@@ -171,9 +218,10 @@ export default function AnalistaFinanceiroAttento() {
     const novos = [];
     for (const f of lista) {
       const b64 = await lerArquivoBase64(f);
-      novos.push({ ...b64, tipo: "balancete", size: f.size });
+      novos.push({ ...b64, tipo: sugerirTipo(f.name), size: f.size });
     }
     setArquivos((prev) => [...prev, ...novos]);
+    if (inputRef.current) inputRef.current.value = ""; // permite reenviar o mesmo arquivo depois de remover
   };
 
   const removerArquivo = (i) => setArquivos((prev) => prev.filter((_, idx) => idx !== i));
@@ -209,17 +257,23 @@ O QUE É REALMENTE UM ERRO (só aponte estes casos):
 - Pagamento sem documento de suporte correspondente.
 
 REGRAS DE SAÍDA:
-- NUNCA gere um item de erro onde conta_errada == conta_correta. Se as duas forem iguais, não é erro: não inclua.
+- Todo erro tem um "tipo": "classificacao" (conta errada), "valor" (valor divergente), "duplicidade" ou "sem_documento".
+- Em erro de "classificacao", NUNCA gere item onde conta_errada == conta_correta. Se as duas forem iguais, não é erro: não inclua.
+- Nos tipos "valor", "duplicidade" e "sem_documento" a conta não muda: repita a mesma conta em conta_errada e conta_correta e explique o problema em "descricao".
 - Se não houver nenhum erro real de classificação/valor/duplicidade, retorne "erros": [] (lista vazia). É um resultado válido e esperado.
 
 Tarefa:
 1. Identificar APENAS os erros reais descritos acima.
 2. Listar TODAS as contas contábeis encontradas com seus saldos.
+3. Registrar em "conferencias" o resultado de CADA conferência das especificações da Attento (conciliação bancária extrato x demonstrativo, saldo do extrato x saldo do demonstrativo, previsto x realizado, água receita x despesa, gás receita x despesa, distribuição de resultado/sobras se o banco for cooperativa). Use "situacao": "ok" quando conferiu e bateu, "atencao" quando achou divergência (diga os valores), "nao_verificavel" quando faltar documento (diga qual). Essas conferências NÃO entram em "erros".
 
 Responda APENAS com JSON, sem markdown, neste formato exato:
 {
   "erros": [
-    { "id": 1, "conta_errada": "02.07.01 Energia Elétrica", "conta_correta": "02.07.03 Água/Esgoto", "valor": 1121.76, "descricao": "Fatura da Águas Cuiabá lançada na conta de energia elétrica", "gravidade": "alta" }
+    { "id": 1, "tipo": "classificacao", "conta_errada": "02.07.01 Energia Elétrica", "conta_correta": "02.07.03 Água/Esgoto", "valor": 1121.76, "descricao": "Fatura da Águas Cuiabá lançada na conta de energia elétrica", "gravidade": "alta" }
+  ],
+  "conferencias": [
+    { "titulo": "Conciliação bancária", "situacao": "ok|atencao|nao_verificavel", "detalhe": "frase curta com o que foi encontrado" }
   ],
   "contas": [
     { "codigo": "02.07.03", "nome": "Água/Esgoto", "saldo": 1121.76, "tipo": "despesa" }
@@ -228,10 +282,8 @@ Responda APENAS com JSON, sem markdown, neste formato exato:
       const resp = await chamarClaude(prompt, arquivos);
       const json = parseJSON(resp);
       if (!json) throw new Error("Não consegui interpretar a resposta da análise. Início da resposta recebida: " + (resp ? resp.slice(0, 200) : "(vazia)"));
-      // Proteção: descarta "erros" onde a conta errada e a correta são iguais (não é erro real)
-      const norm = (s) => (s || "").trim().toLowerCase();
-      const errosReais = (json.erros || []).filter((e) => norm(e.conta_errada) !== norm(e.conta_correta));
-      setAnalise({ erros: errosReais, contas: json.contas || [] });
+      const errosReais = filtrarErrosReais(json.erros);
+      setAnalise({ erros: errosReais, contas: json.contas || [], conferencias: Array.isArray(json.conferencias) ? json.conferencias : [] });
       const inicial = {};
       errosReais.forEach((e) => (inicial[e.id] = false));
       setErrosCorrigidos(inicial);
@@ -278,8 +330,12 @@ Responda APENAS com JSON, valores numéricos sem "R$":
   "total_entrou": 0,
   "total_saiu": 0,
   "saldo_periodo": 0,
-  "tendencias": ["frase simples sobre o que mais subiu", "frase sobre o saldo ao longo do tempo"]
+  "tendencias": ["frase simples sobre o que mais subiu", "frase sobre o saldo ao longo do tempo"],
+  "despesas_fixas": [
+    { "despesa": "Energia Elétrica", "meses_sem_pagamento": ["Maio/2026"], "ok": false, "observacao": "faltou pagamento em maio" }
+  ]
 }
+Em "despesas_fixas" liste TODAS as despesas fixas/recorrentes identificadas; "ok": true quando foi paga em todos os meses do período (e "meses_sem_pagamento": []), "ok": false quando faltou pagamento em algum mês.
 Ordene "meses" do mais antigo para o mais recente. "categorias_periodo" deve listar todas as categorias que aparecem, para servir de base ao gráfico de evolução.`;
       const resp = await chamarClaude(prompt, arquivos);
       const json = parseJSON(resp);
@@ -456,10 +512,7 @@ Responda APENAS com JSON, valores numéricos sem "R$":
 Documentos anexados: prestação de contas do condomínio "${condominio || "—"}", mês "${mesPrestacao}".
 
 Tarefa: verificar se há ISSQN (Imposto Sobre Serviços de Qualquer Natureza) no relatório.
-// ⚠️ AJUSTAR quando o Felipe mandar o relatório de exemplo: descrever exatamente
-// como o ISSQN aparece nos documentos da Attento (linha de retenção sobre serviços,
-// conta contábil própria, campo destacado, etc.). Por enquanto procure qualquer
-// menção/lançamento de "ISSQN" ou "ISS" no relatório.
+Procure qualquer menção ou lançamento de "ISSQN" ou "ISS" (retenção sobre serviços, conta contábil própria, guia paga, campo destacado em nota fiscal).
 
 Responda APENAS com JSON, valores numéricos sem "R$":
 {
@@ -497,7 +550,7 @@ Se não houver nenhuma menção a ISSQN/ISS, "encontrado": false e "valor": 0.`;
     setStatusMsg("Reavaliando a análise com sua explicação...");
     try {
       const errosTxt = (analise?.erros || [])
-        .map((e) => `- [${e.id}] ${e.descricao} (${e.conta_errada} → ${e.conta_correta}, R$ ${e.valor})`)
+        .map((e) => `- [${e.id}] (tipo: ${e.tipo || "classificacao"}) ${e.descricao} (${e.conta_errada} → ${e.conta_correta}, R$ ${e.valor})`)
         .join("\n") || "(nenhum)";
       const prompt = `Você é o analista contábil da Attento. Você havia identificado estes erros na análise atual:
 ${errosTxt}
@@ -507,20 +560,19 @@ O analista humano te enviou esta observação/correção sobre a análise:
 
 Tarefas:
 1. Se a observação for uma REGRA reutilizável (algo que deve valer pra próximas análises, ex: "X não é erro, é o padrão da Attento"), extraia-a de forma curta e clara.
-2. Reavalie a lista de erros considerando a observação. Remova os que não são erros de verdade segundo o que foi explicado; mantenha só os reais.
+2. Reavalie a lista de erros considerando a observação. Remova os que não são erros de verdade segundo o que foi explicado; mantenha só os reais, com o MESMO "id" e "tipo" que já tinham.
 3. Escreva uma resposta curta e direta pro analista (1-2 frases), em português, confirmando o que entendeu.
 
 Responda APENAS com JSON:
 {
   "resposta": "texto curto pro analista",
   "nova_regra": "regra reutilizável extraída, ou string vazia se não houver",
-  "erros": [ { "id": 1, "conta_errada": "", "conta_correta": "", "valor": 0, "descricao": "", "gravidade": "" } ]
+  "erros": [ { "id": 1, "tipo": "classificacao|valor|duplicidade|sem_documento", "conta_errada": "", "conta_correta": "", "valor": 0, "descricao": "", "gravidade": "" } ]
 }`;
       const resp = await chamarClaude(prompt, arquivos);
       const json = parseJSON(resp);
       if (!json) throw new Error("Não consegui interpretar a resposta do chat.");
-      const norm = (s) => (s || "").trim().toLowerCase();
-      const errosReais = (json.erros || []).filter((e) => norm(e.conta_errada) !== norm(e.conta_correta));
+      const errosReais = filtrarErrosReais(json.erros);
       setAnalise((prev) => ({ ...prev, erros: errosReais }));
       const inicial = {};
       errosReais.forEach((e) => (inicial[e.id] = !!errosCorrigidos[e.id]));
@@ -551,14 +603,17 @@ Responda APENAS com JSON:
     setStatusMsg("Revalidando lançamentos corrigidos...");
     try {
       const errosTxt = analise.erros
-        .map((e) => `- ${e.descricao}: deveria estar em "${e.conta_correta}" (R$ ${e.valor})`)
+        .map((e) => TIPOS_ERRO_SEM_TROCA.includes(e.tipo)
+          ? `- ${e.descricao} (conta "${e.conta_correta}", R$ ${e.valor}) — problema de ${e.tipo}, corrigido no sistema`
+          : `- ${e.descricao}: deveria estar em "${e.conta_correta}" (R$ ${e.valor})`)
         .join("\n");
       const prompt = `O usuário corrigiu os seguintes erros contábeis do condomínio "${condominio}":
 ${errosTxt}
 
 Confirme se a correção faz sentido contábil e responda APENAS com JSON:
 { "validado": true, "observacao": "texto curto confirmando que as contas estão corretas" }`;
-      const resp = await chamarClaude(prompt, arquivos);
+      // não reenvia os documentos: eles não mudaram, a revalidação é só da lógica contábil
+      const resp = await chamarClaude(prompt);
       const json = parseJSON(resp);
       if (json && json.validado) {
         setStatusMsg("");
@@ -604,7 +659,8 @@ Responda APENAS com JSON, valores numéricos sem "R$":
 Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total_saiu.`;
       const resp = await chamarClaude(prompt, arquivos);
       const json = parseJSON(resp);
-      setApresentacao(json || { total_entrou: 0, total_saiu: 0, sobrou: 0, resumo: [], categorias: [] });
+      if (!json) throw new Error("Não consegui montar a apresentação. Início da resposta: " + (resp ? resp.slice(0, 200) : "(vazia)"));
+      setApresentacao(json);
       setEtapa("apresentacao");
     } catch (err) {
       setErroApi(err.message);
@@ -624,6 +680,8 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
     setIssqnResultado(null);
     setAuditoria(null);
     setErrosCorrigidos({});
+    setChatMsgs([]);
+    setChatInput("");
     setErroApi("");
   };
 
@@ -645,9 +703,9 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", maxWidth: 960, margin: "0 auto", color: VERDE[900] }}>
       {/* HEADER */}
-      <div style={{ background: VERDE[800], borderRadius: 16, padding: "20px 28px", marginBottom: 20, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <div className="no-print" style={{ background: VERDE[800], borderRadius: 16, padding: "20px 28px", marginBottom: 20, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div style={{ width: 48, height: 48, borderRadius: 12, background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", padding: 4 }}>
+          <div style={{ width: 132, height: 48, borderRadius: 12, background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", padding: "4px 8px", boxSizing: "border-box", flexShrink: 0 }}>
             <img src="/logo-attento.png" alt="Attento" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
           </div>
           <div>
@@ -689,7 +747,7 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
         const filtrado = relatorioMes ? relatorio.filter((r) => r.periodo === relatorioMes) : relatorio;
         const fmtData = (s) => { try { return new Date(s).toLocaleDateString("pt-BR"); } catch { return s; } };
         return (
-          <div style={{ background: "#fff", border: "1px solid #E2E6E2", borderRadius: 14, padding: "20px 24px", marginBottom: 20 }}>
+          <div className="no-print" style={{ background: "#fff", border: "1px solid #E2E6E2", borderRadius: 14, padding: "20px 24px", marginBottom: 20 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div style={{ fontSize: 18, fontWeight: 700, color: VERDE[800] }}>📋 Relatório de análises</div>
               <button onClick={() => setMostrarRelatorio(false)} style={{ background: "transparent", border: "1px solid #D6DAD6", color: "#6B756D", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer" }}>Fechar</button>
@@ -820,6 +878,16 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
                   <button onClick={() => removerArquivo(i)} style={{ background: "transparent", border: "none", color: "#C0392B", cursor: "pointer", fontSize: 18 }}>×</button>
                 </div>
               ))}
+              {(() => {
+                // tamanho real do envio: base64 ocupa ~4/3 do arquivo original
+                const envio = arquivos.reduce((s, a) => s + (a.data?.length || 0), 0);
+                const excedeu = envio > LIMITE_ENVIO_BYTES;
+                return (
+                  <div style={{ fontSize: 12, color: excedeu ? "#C0392B" : "#7A857C", fontWeight: excedeu ? 600 : 400 }}>
+                    Tamanho do envio: {(envio / 1024 / 1024).toFixed(1)} MB de ~4 MB.{excedeu ? " Passou do limite — comprima os PDFs ou remova arquivos antes de analisar." : ""}
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -864,10 +932,17 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{e.descricao}</div>
-                    <div style={{ fontSize: 13, color: "#6B756D" }}>
-                      <span style={{ color: "#C0392B" }}>● {e.conta_errada}</span>{"  →  "}
-                      <span style={{ color: VERDE[600] }}>● {e.conta_correta}</span>
-                    </div>
+                    {mesmaConta(e) ? (
+                      <div style={{ fontSize: 13, color: "#6B756D" }}>
+                        <span style={{ color: "#C0392B" }}>● {e.conta_correta || e.conta_errada}</span>
+                        {" · "}{{ valor: "Valor divergente", duplicidade: "Lançamento duplicado", sem_documento: "Sem documento de suporte" }[e.tipo] || e.tipo}
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 13, color: "#6B756D" }}>
+                        <span style={{ color: "#C0392B" }}>● {e.conta_errada}</span>{"  →  "}
+                        <span style={{ color: VERDE[600] }}>● {e.conta_correta}</span>
+                      </div>
+                    )}
                     <div style={{ fontSize: 13, color: "#6B756D", marginTop: 2 }}>Valor: {brl(e.valor)} · Gravidade: {e.gravidade}</div>
                   </div>
                   <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: VERDE[700], cursor: "pointer", whiteSpace: "nowrap" }}>
@@ -888,6 +963,37 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
               </button>
             )}
           </div>
+
+          {/* ===== CONFERÊNCIAS DA ATTENTO (conciliação, saldos, água, gás, cooperativa) ===== */}
+          {Array.isArray(analise.conferencias) && analise.conferencias.length > 0 && (
+            <div style={{ marginTop: 28, background: "#fff", border: "1px solid #E2E6E2", borderRadius: 14, overflow: "hidden" }}>
+              <div style={{ background: VERDE[100], padding: "12px 16px", display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 16 }}>🧮</span>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: VERDE[800] }}>Conferências</div>
+                  <div style={{ fontSize: 12, color: VERDE[700] }}>Conciliação bancária, saldos, água, gás e distribuição de sobras (cooperativa).</div>
+                </div>
+              </div>
+              <div style={{ padding: "6px 16px" }}>
+                {analise.conferencias.map((c, i) => {
+                  const s = {
+                    ok: { icon: "✅", cor: VERDE[700], txt: "Conferido" },
+                    atencao: { icon: "⚠️", cor: "#C8861A", txt: "Atenção" },
+                    nao_verificavel: { icon: "➖", cor: "#8A938C", txt: "Não verificável" },
+                  }[c.situacao] || { icon: "•", cor: "#6B756D", txt: c.situacao };
+                  return (
+                    <div key={i} style={{ display: "flex", gap: 10, padding: "10px 0", borderTop: i > 0 ? "1px solid #EEF1EE" : "none" }}>
+                      <span style={{ fontSize: 15 }}>{s.icon}</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: "#2C322C" }}>{c.titulo} <span style={{ fontSize: 12, fontWeight: 600, color: s.cor }}>· {s.txt}</span></div>
+                        {c.detalhe && <div style={{ fontSize: 13, color: "#3F473F" }}>{c.detalhe}</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* ===== CONFERÊNCIA DO FUNDO DE RESERVA ===== */}
           <div style={{ marginTop: 28, background: "#fff", border: "1px solid #E2E6E2", borderRadius: 14, overflow: "hidden" }}>
@@ -1179,7 +1285,7 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
 
             {/* fundo de reserva */}
             {auditoria.fundo_reserva && (
-              <div style={{ ...card, border: `1px solid ${auditoria.fundo_reserva.tudo_aplicado ? VERDE[200] : "#C8861A"}` }}>
+              <div style={{ ...card, border: `1px solid ${(auditoria.fundo_reserva.pendente || /não aplic/i.test(auditoria.fundo_reserva.veredito || "")) ? "#C8861A" : VERDE[200]}` }}>
                 <h3 style={secTitulo}>🏦 Fundo de Reserva</h3>
                 {auditoria.fundo_reserva.veredito && (() => {
                   const pend = auditoria.fundo_reserva.pendente;
@@ -1191,7 +1297,7 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
                 <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "6px 16px", fontSize: 13.5, maxWidth: 420 }}>
                   <div>Arrecadado:</div><div style={{ textAlign: "right", fontWeight: 600 }}>{brl(auditoria.fundo_reserva.arrecadado)}</div>
                   <div>Aplicado/transferido:</div><div style={{ textAlign: "right", fontWeight: 600 }}>{brl(auditoria.fundo_reserva.aplicado_ou_transferido)}</div>
-                  <div>Diferença:</div><div style={{ textAlign: "right", fontWeight: 700, color: (auditoria.fundo_reserva.diferenca ?? 0) === 0 ? VERDE[700] : "#C8861A" }}>{brl(auditoria.fundo_reserva.diferenca)}</div>
+                  <div>Diferença:</div><div style={{ textAlign: "right", fontWeight: 700, color: Math.abs(Number(auditoria.fundo_reserva.diferenca) || 0) < 0.01 ? VERDE[700] : "#C8861A" }}>{brl(auditoria.fundo_reserva.diferenca)}</div>
                   <div>Saldo final:</div><div style={{ textAlign: "right", fontWeight: 600 }}>{brl(auditoria.fundo_reserva.saldo_final)}</div>
                 </div>
                 {auditoria.fundo_reserva.observacao && <div style={{ fontSize: 13, color: "#3F473F", marginTop: 10 }}>{auditoria.fundo_reserva.observacao}</div>}
@@ -1441,8 +1547,31 @@ Ordene "categorias" do maior valor para o menor. "sobrou" = total_entrou - total
             </div>
           )}
 
+          {/* despesas fixas — foram pagas em todos os meses? */}
+          {Array.isArray(analisePeriodo.despesas_fixas) && analisePeriodo.despesas_fixas.length > 0 && (
+            <div style={{ background: "#fff", border: "1px solid #E2E6E2", borderRadius: 14, padding: "20px 24px", marginBottom: 16 }}>
+              <div style={{ fontSize: 17, fontWeight: 600, color: VERDE[800], marginBottom: 14 }}>🔁 Despesas fixas — foram pagas?</div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead><tr style={{ background: VERDE[100] }}>
+                  <th style={th}>Despesa</th><th style={th}>Situação</th><th style={th}>Meses sem pagamento</th><th style={th}>Observação</th>
+                </tr></thead>
+                <tbody>
+                  {analisePeriodo.despesas_fixas.map((d, i) => (
+                    <tr key={i} style={{ borderTop: "1px solid #EEF1EE" }}>
+                      <td style={{ ...td, fontWeight: 600 }}>{d.despesa}</td>
+                      <td style={td}>{d.ok ? <span style={{ color: VERDE[700], fontWeight: 600 }}>✔ Paga em todos</span> : <span style={{ color: "#C0392B", fontWeight: 600 }}>✕ Faltou</span>}</td>
+                      <td style={td}>{Array.isArray(d.meses_sem_pagamento) && d.meses_sem_pagamento.length > 0 ? d.meses_sem_pagamento.join(", ") : "—"}</td>
+                      <td style={td}>{d.observacao || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
           <div className="no-print" style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <button onClick={() => window.print()} style={btnPrimary}>📄 Exportar PDF</button>
+            <button onClick={reiniciar} style={btnSecondary}>Nova análise</button>
           </div>
           <style>{`
               @media print {

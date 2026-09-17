@@ -15,8 +15,21 @@ export default async function handler(req, res) {
     return res.status(500).json({ erro: "ANTHROPIC_API_KEY não configurada no Vercel" });
   }
 
+  // só aceita chamadas vindas do próprio site (evita uso da chave por terceiros)
+  const origem = req.headers.origin;
+  if (origem) {
+    let hostOrigem = "";
+    try { hostOrigem = new URL(origem).host; } catch {}
+    if (hostOrigem !== req.headers.host) {
+      return res.status(403).json({ erro: "Origem não permitida" });
+    }
+  }
+
   try {
-    const { prompt, arquivos = [] } = req.body;
+    const { prompt, arquivos = [] } = req.body || {};
+    if (!prompt || typeof prompt !== "string") {
+      return res.status(400).json({ erro: "Prompt ausente" });
+    }
 
     // monta o content com documentos/imagens + texto
     const content = [];
@@ -44,7 +57,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: 16000,
+        max_tokens: 20000,
         messages: [{ role: "user", content }],
       }),
     });
@@ -60,7 +73,8 @@ export default async function handler(req, res) {
       .map((i) => i.text)
       .join("\n");
 
-    return res.status(200).json({ texto });
+    // cortada = a resposta bateu no max_tokens e o JSON veio incompleto
+    return res.status(200).json({ texto, cortada: data.stop_reason === "max_tokens" });
   } catch (e) {
     return res.status(500).json({ erro: e.message });
   }
