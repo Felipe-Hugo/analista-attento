@@ -4,8 +4,8 @@
 //  tem policy de acesso liberado só pra ela.
 // ============================================================================
 
-const SUPABASE_URL = "https://iggjdevyzqdzegukqsuv.supabase.co";
-const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlnZ2pkZXZ5enFkemVndWtxc3V2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYzODM4ODIsImV4cCI6MjEwMTk1OTg4Mn0.neVXObgp_GeMXeGRp4VGuzuEfQcKjesDZkhBYcnVBZQ";
+export const SUPABASE_URL ="https://iggjdevyzqdzegukqsuv.supabase.co";
+export const SUPABASE_ANON ="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlnZ2pkZXZ5enFkemVndWtxc3V2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYzODM4ODIsImV4cCI6MjEwMTk1OTg4Mn0.neVXObgp_GeMXeGRp4VGuzuEfQcKjesDZkhBYcnVBZQ";
 
 const REST = `${SUPABASE_URL}/rest/v1/analises`;
 const headers = {
